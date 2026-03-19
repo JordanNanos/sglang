@@ -30,5 +30,25 @@ class TestQwen3Next(
     ]
 
 
+class TestQwen3NextWithHybridRadixTree(
+    GSM8KMixin, KLDivergenceMixin, PrefixCacheBranchingMixin, DefaultServerBase
+):
+    model = QWEN3_NEXT_MODEL
+    cache_chunk_size = 64
+    gsm8k_accuracy_thres = 0.93
+    kl_div_thres = 0.0025
+    other_args = [
+        "--tp-size",
+        "4",
+        "--chunked-prefill-size",
+        "2048",
+        "--mamba-scheduler-strategy",
+        "extra_buffer",
+        "--mamba-track-interval",
+        "128",
+        "--enable-hybrid-radix-tree",
+    ]
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -541,6 +541,7 @@ class ServerArgs:
     mamba_full_memory_ratio: float = 0.9
     mamba_scheduler_strategy: str = "auto"
     mamba_track_interval: int = 256
+    enable_hybrid_radix_tree: bool = False
     linear_attn_backend: str = "triton"
     linear_attn_decode_backend: Optional[str] = None
     linear_attn_prefill_backend: Optional[str] = None
@@ -4820,6 +4821,11 @@ class ServerArgs:
             default=ServerArgs.mamba_backend,
             help="Choose the kernel backend for Mamba SSM operations. Default is 'triton'. "
             "Options: 'triton' (default), 'flashinfer' (requires FlashInfer with Mamba support).",
+        )
+        parser.add_argument(
+            "--enable-hybrid-radix-tree",
+            action="store_true",
+            help="Use HybridRadixCache to replace MambaRadixCache or SWARadixTree.",
         )
         parser.add_argument(
             "--linear-attn-backend",

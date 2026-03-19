@@ -744,9 +744,16 @@ class Scheduler(
 
                 self.tree_cache = SWARadixCache(params=params)
             elif self.is_hybrid_ssm:
-                from sglang.srt.mem_cache.mamba_radix_cache import MambaRadixCache
+                if server_args.enable_hybrid_radix_tree:
+                    from sglang.srt.mem_cache.hybrid_cache.hybrid_radix_cache import (
+                        create_hybrid_radix_cache,
+                    )
 
-                self.tree_cache = MambaRadixCache(params)
+                    self.tree_cache = create_hybrid_radix_cache(params)
+                else:
+                    from sglang.srt.mem_cache.mamba_radix_cache import MambaRadixCache
+
+                    self.tree_cache = MambaRadixCache(params)
             elif server_args.enable_lmcache:
                 from sglang.srt.mem_cache.storage.lmcache.lmc_radix_cache import (
                     LMCRadixCache,
