@@ -2512,7 +2512,9 @@ def main():
         )
 
         # Choosing nvidia pr test and nightly for runner health analysis
-        runner_runs = pr_test_nvidia_general_runs + nightly_nvidia_general_runs
+        # Use scheduled runs (already limited to 12 PR + 6 nightly) to avoid
+        # pulling months of history from the unfiltered general fetch.
+        runner_runs = pr_test_nvidia_scheduled_runs + nightly_nvidia_scheduled_runs
 
         if not runner_runs and not pr_test_nvidia_scheduled_runs:
             print("No workflow runs found")
