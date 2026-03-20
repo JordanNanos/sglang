@@ -134,12 +134,10 @@ class MambaComponent(TreeComponent):
         while tracker[self.name] < request and x is not None and lru.in_list(x):
             assert x.component_value(self.name) is not None
             if len(x.children) > 0:
-                # Internal: evict self, cascade to equal-priority components
                 x_next = lru.get_prev_no_lock(x)
                 self.cache._evict_component_and_detach_lru(
                     x, self, is_leaf=False, tracker=tracker
                 )
-                self.cache._cascade_evict(x, self, tracker)
                 x = x_next
             else:
                 # Leaf: evict self, cascade to all components
