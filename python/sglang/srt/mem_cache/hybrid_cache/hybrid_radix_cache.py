@@ -645,7 +645,7 @@ class HybridRadixCache(BasePrefixCache):
     def _evict_component_and_detach_lru(
         self,
         node: HybridTreeNode,
-        comp,
+        comp: TreeComponent,
         is_leaf: bool,
         tracker: dict[str, int],
     ) -> int:
@@ -656,7 +656,9 @@ class HybridRadixCache(BasePrefixCache):
             lru.remove_node(node)
         return freed
 
-    def _cascade_evict(self, node, trigger, tracker):
+    def _cascade_evict(
+        self, node: HybridTreeNode, trigger: TreeComponent, tracker: dict[str, int]
+    ):
         is_leaf = len(node.children) == 0
         trigger_priority = trigger.eviction_priority(is_leaf)
 
@@ -672,29 +674,34 @@ class HybridRadixCache(BasePrefixCache):
             self._remove_leaf_from_parent(node)
             self._iteratively_delete_tombstone_leaf(node, tracker)
 
-    def _iteratively_delete_tombstone_leaf(self, node, tracker):
-        while node.parent != self.root_node and len(node.parent.children) == 0:
-            parent = node.parent
-            can_delete = True
-            for comp in self.components.values():
-                if not comp.node_has_component_data(parent):
-                    continue
-                if not comp.name.is_full:
-                    can_delete = False
-                    break
-                if parent.component(comp.name).lock_ref > 0:
-                    can_delete = False
-                    break
-            if not can_delete:
+    def _iteratively_delete_tombstone_leaf(
+        self, deleted_node: HybridTreeNode, tracker: dict[str, int]
+    ):
+        """After a leaf is removed, walk up the parent chain and delete
+        any ancestor that is leaf node and has lost any component data (tombstoned)."""
+        cur = deleted_node.parent
+        while cur != self.root_node and len(cur.children) == 0:
+            has_tombstone = any(
+                not comp.node_has_component_data(cur)
+                for comp in self.components.values()
+            )
+            if not has_tombstone:
+                break
+
+            if any(
+                cur.component(comp.name).lock_ref > 0
+                for comp in self.components.values()
+                if comp.node_has_component_data(cur)
+            ):
                 break
 
             for comp in self.components.values():
-                if comp.node_has_component_data(parent):
+                if comp.node_has_component_data(cur):
                     self._evict_component_and_detach_lru(
-                        parent, comp, is_leaf=True, tracker=tracker
+                        cur, comp, is_leaf=True, tracker=tracker
                     )
-            self._remove_leaf_from_parent(parent)
-            node = parent
+            self._remove_leaf_from_parent(cur)
+            cur = cur.parent
 
     ## Other Apis for Usage Checking
     @property
