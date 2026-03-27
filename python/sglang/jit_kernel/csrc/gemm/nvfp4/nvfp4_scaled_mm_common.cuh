@@ -50,25 +50,11 @@ inline uint32_t next_pow_2(uint32_t x) noexcept {
   return 1u << (32 - __builtin_clz(x - 1));
 }
 
-inline auto get_workspace(size_t required_bytes, DLDevice device) -> void* {
-  if (required_bytes == 0) {
-    return nullptr;
-  }
-  thread_local tvm::ffi::Tensor cached;
-  thread_local size_t cached_bytes = 0;
-  thread_local DLDevice cached_device = {kDLCPU, -1};
-
-  if (cached_bytes >= required_bytes && cached_device.device_type == device.device_type &&
-      cached_device.device_id == device.device_id) {
-    return cached.data_ptr();
-  }
-
+inline auto alloc_workspace_tensor(size_t required_bytes, DLDevice device) -> tvm::ffi::Tensor {
+  if (required_bytes == 0) return {};
   DLDataType u8 = {kDLUInt, 8, 1};
   int64_t shape[] = {static_cast<int64_t>(required_bytes)};
-  cached = ffi::empty(tvm::ffi::ShapeView(shape, 1), u8, device);
-  cached_bytes = required_bytes;
-  cached_device = device;
-  return cached.data_ptr();
+  return ffi::empty(tvm::ffi::ShapeView(shape, 1), u8, device);
 }
 
 inline int getSMVersion(int device_id) {

@@ -167,7 +167,8 @@ void runGemmSm120(
   auto arguments = args_from_options_sm120<Gemm>(D, A, B, A_sf, B_sf, alpha, M, N, K);
 
   size_t workspace_size = Gemm::get_workspace_size(arguments);
-  void* workspace = get_workspace(workspace_size, A.device());
+  auto workspace_tensor = alloc_workspace_tensor(workspace_size, A.device());
+  void* workspace = (workspace_size == 0) ? nullptr : workspace_tensor.data_ptr();
 
   CUTLASS_CHECK(gemm.can_implement(arguments));
 
