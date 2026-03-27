@@ -21,6 +21,7 @@ from typing import Dict, List, Optional
 import requests
 from tabulate import tabulate
 
+from sglang.srt.environ import envs
 from sglang.srt.utils import kill_process_tree
 from sglang.srt.utils.hf_transformers_utils import get_tokenizer
 from sglang.test.ci.ci_register import register_cuda_ci
@@ -324,20 +325,21 @@ class TestSessionLatency(CustomTestCase):
         # NOTE: Overlap scheduling commits KV cache one step ahead,
         # so the last decode token is cached (unlike non-overlap).
         # Disable overlap to keep session cache behavior consistent.
-        cls.process = popen_launch_server(
-            cls.model,
-            cls.base_url,
-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            other_args=[
-                "--disable-overlap-schedule",
-                "--enable-streaming-session",
-                "--mem-fraction-static",
-                "0.70",
-                "--disable-piecewise-cuda-graph",
-                "--page-size",
-                "4",
-            ],
-        )
+        with envs.SGLANG_ENABLE_STRICT_MEM_CHECK_DURING_BUSY.override(2):
+            cls.process = popen_launch_server(
+                cls.model,
+                cls.base_url,
+                timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
+                other_args=[
+                    "--disable-overlap-schedule",
+                    "--enable-streaming-session",
+                    "--mem-fraction-static",
+                    "0.70",
+                    "--disable-piecewise-cuda-graph",
+                    "--page-size",
+                    "4",
+                ],
+            )
         cls.tokenizer = get_tokenizer(cls.model)
 
         requests.post(cls.base_url + "/flush_cache")

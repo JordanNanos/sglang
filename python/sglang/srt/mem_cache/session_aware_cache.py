@@ -48,6 +48,11 @@ class SessionSlot:
     cache_protected_len: int = 0
     swa_uuid_for_lock: Optional[str] = None
 
+    # When True, KV ownership has been temporarily lent to an active request
+    # via restore_to_req.  session_held_*() methods skip lending slots so that
+    # the tokens are counted only once (in the batch, not in session_held).
+    lending: bool = False
+
     # SWA state
     swa_evicted_seqlen: int = 0
 
@@ -69,6 +74,7 @@ class SessionSlot:
         self.kv_committed_len = req.kv_committed_len
         self.kv_allocated_len = req.kv_allocated_len
         self.swa_evicted_seqlen = req.swa_evicted_seqlen
+        self.lending = False
 
         if is_first:
             self.last_node = req.last_node
@@ -97,6 +103,11 @@ class SessionSlot:
         req.mamba_next_track_idx = self.mamba_next_track_idx
         req.mamba_last_track_seqlen = self.mamba_last_track_seqlen
         req.mamba_branching_seqlen = self.mamba_branching_seqlen
+
+        # Mark slot as lending: KV ownership is temporarily shared with the
+        # active request.  session_held_*() will skip this slot to avoid
+        # double-counting tokens that are already in the batch.
+        self.lending = True
 
         # NOTE: req_pool_idx and mamba_pool_idx are intentionally NOT cleared
         # from the slot. During chunked prefill, a request may be rejected by
@@ -269,10 +280,14 @@ class SessionAwareCache(BasePrefixCache):
             self.req_to_token_pool.free_slots.append(slot.req_pool_idx)
 
     def session_held_tokens(self) -> int:
-        """Total KV tokens held by session slots, not tracked by the tree."""
+        """Total KV tokens held by session slots, not tracked by the tree.
+
+        Slots in lending state are skipped — their tokens are accounted for
+        by the active request in the batch.
+        """
         total = 0
         for slot in self.slots.values():
-            if slot.is_holding_kv:
+            if slot.is_holding_kv and not slot.lending:
                 allocated = ceil_align(slot.kv_allocated_len, self.page_size)
                 total += allocated - slot.cache_protected_len
         return total
@@ -285,7 +300,7 @@ class SessionAwareCache(BasePrefixCache):
         """Total SWA tokens held by session slots, not tracked by the tree."""
         total = 0
         for slot in self.slots.values():
-            if slot.is_holding_kv:
+            if slot.is_holding_kv and not slot.lending:
                 allocated = ceil_align(slot.kv_allocated_len, self.page_size)
                 total += allocated - max(
                     slot.cache_protected_len, slot.swa_evicted_seqlen
@@ -294,7 +309,7 @@ class SessionAwareCache(BasePrefixCache):
 
     def session_held_req_count(self) -> int:
         """Number of req pool slots held by session slots."""
-        return sum(s.is_holding_kv for s in self.slots.values())
+        return sum(s.is_holding_kv and not s.lending for s in self.slots.values())
 
     # -- Pass-through methods --
 
