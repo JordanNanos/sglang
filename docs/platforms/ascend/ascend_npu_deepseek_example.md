@@ -278,21 +278,19 @@ python -m sglang_router.launch_router \
 
 ```python
 from types import SimpleNamespace
-from sglang.test.few_shot_gsm8k import run_eval
+from sglang.test.run_eval import run_eval
 
 def gsm8k():
     args = SimpleNamespace(
-        num_shots=5,
-        data_path=None,
-        num_questions=200,
-        max_new_tokens=512,
-        parallel=32,
-        host=f"http://127.0.0.1",
-        port=6688,
+        base_url="http://127.0.0.1:6688",
+        model="deepseek-ai/DeepSeek-V2-Lite-Chat",
+        eval_name="gsm8k",
+        num_examples=200,
+        num_threads=32,
     )
     metrics = run_eval(args)
     print(f"{metrics=}")
-    print(f"{metrics['accuracy']=}")
+    print(f"{metrics['score']=}")
 if __name__ == "__main__":
     gsm8k()
 ```

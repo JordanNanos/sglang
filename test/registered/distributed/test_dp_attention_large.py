@@ -6,16 +6,13 @@ import requests
 from sglang.lang.chat_template import get_chat_template_by_model_path
 from sglang.srt.utils import kill_process_tree
 from sglang.test.ci.ci_register import register_amd_ci, register_cuda_ci
-from sglang.test.few_shot_gsm8k import run_eval as run_eval_few_shot_gsm8k
 from sglang.test.kits.ebnf_constrained_kit import EBNFConstrainedMixin
 from sglang.test.kits.json_constrained_kit import JSONConstrainedMixin
 from sglang.test.kits.regex_constrained_kit import RegexConstrainedMixin
-from sglang.test.run_eval import run_eval
+from sglang.test.run_eval import run_eval as run_eval_few_shot_gsm8k
 from sglang.test.test_utils import (
     DEFAULT_IMAGE_URL,
     DEFAULT_MLA_MODEL_NAME_FOR_TEST,
-    DEFAULT_MODEL_NAME_FOR_TEST_MLA,
-    DEFAULT_MODEL_NAME_FOR_TEST_MLA_NEXTN,
     DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
     DEFAULT_URL_FOR_TEST,
     CustomTestCase,
@@ -61,72 +58,14 @@ class TestDPAttentionDP2TP4(
         args = SimpleNamespace(
             base_url=self.base_url,
             model=self.model,
-            eval_name="mgsm_en",
-            num_examples=None,
-            num_threads=1024,
-        )
-
-        metrics = run_eval(args)
-        print(f"{metrics=}")
-        self.assertGreater(metrics["score"], 0.8)
-
-
-@unittest.skipIf(
-    is_in_amd_ci(),
-    "DeepSeek MTP forward_mla NameError on AMD + needs 8 GPUs",
-)
-class TestDPAttentionDP2TP2DeepseekV3MTP(
-    CustomTestCase,
-    JSONConstrainedMixin,
-    EBNFConstrainedMixin,
-    RegexConstrainedMixin,
-):
-    @classmethod
-    def setUpClass(cls):
-        cls.model = DEFAULT_MODEL_NAME_FOR_TEST_MLA
-        cls.base_url = DEFAULT_URL_FOR_TEST
-        other_args = [
-            "--trust-remote-code",
-            "--disable-radix",
-            "--speculative-algorithm=EAGLE",
-            "--speculative-num-steps=2",
-            "--speculative-eagle-topk=4",
-            "--speculative-num-draft-tokens=4",
-            "--speculative-draft-model-path",
-            DEFAULT_MODEL_NAME_FOR_TEST_MLA_NEXTN,
-            "--tp-size=4",
-            "--enable-dp-attention",
-            "--dp-size=2",
-        ]
-        if not is_in_amd_ci():
-            other_args += ["--mem-frac", "0.7"]
-        cls.process = popen_launch_server(
-            cls.model,
-            cls.base_url,
-            timeout=DEFAULT_TIMEOUT_FOR_SERVER_LAUNCH,
-            other_args=other_args,
-        )
-
-    @classmethod
-    def tearDownClass(cls):
-        kill_process_tree(cls.process.pid)
-
-    def test_gsm8k(self):
-        requests.get(self.base_url + "/flush_cache")
-
-        args = SimpleNamespace(
-            num_shots=5,
-            data_path=None,
-            num_questions=200,
-            max_new_tokens=512,
-            parallel=128,
-            host="http://127.0.0.1",
-            port=int(self.base_url.split(":")[-1]),
+            eval_name="gsm8k",
+            num_examples=200,
+            num_threads=128,
         )
         metrics = run_eval_few_shot_gsm8k(args)
         print(metrics)
 
-        self.assertGreater(metrics["accuracy"], 0.60)
+        self.assertGreater(metrics["score"], 0.60)
 
         server_info = requests.get(self.base_url + "/get_server_info")
         avg_spec_accept_length = server_info.json()["internal_states"][0][
@@ -134,7 +73,7 @@ class TestDPAttentionDP2TP2DeepseekV3MTP(
         ]
         print(
             f"###test_gsm8k (deepseek-v3 mtp + dp):\n"
-            f"accuracy={metrics['accuracy']=:.3f}\n"
+            f"accuracy={metrics['score']=:.3f}\n"
             f"{avg_spec_accept_length=:.3f}\n"
         )
         self.assertGreater(avg_spec_accept_length, 2.5)

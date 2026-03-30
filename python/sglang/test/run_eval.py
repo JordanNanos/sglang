@@ -170,8 +170,15 @@ def run_eval(args):
     if getattr(args, "repeat", 1) == 1:
         result, latency, sampler = run_eval_once(args, base_url, eval_obj)
         metrics = result.metrics | {"score": result.score}
+        metrics["latency"] = latency
         print(f"Total latency: {latency:.3f} s")
         print(f"Score: {metrics['score']:.3f}")
+
+        # Compute output throughput from accumulated completion tokens
+        total_completion_tokens = sum(sampler._completion_tokens)
+        if total_completion_tokens > 0 and latency > 0:
+            metrics["output_throughput"] = total_completion_tokens / latency
+            print(f"Output throughput: {metrics['output_throughput']:.3f} token/s")
 
         # Report metrics to unified collection framework
         dump_metric(

@@ -6,7 +6,7 @@ import requests
 from sglang.srt.environ import envs
 from sglang.srt.utils import get_device_sm, kill_process_tree
 from sglang.test.ci.ci_register import register_cuda_ci
-from sglang.test.few_shot_gsm8k import run_eval as run_eval_few_shot_gsm8k
+from sglang.test.run_eval import run_eval as run_eval_few_shot_gsm8k
 from sglang.test.test_utils import (
     DEFAULT_DRAFT_MODEL_EAGLE,
     DEFAULT_MODEL_NAME_FOR_TEST,
@@ -77,19 +77,19 @@ class TestHybridAttnBackendBase(CustomTestCase):
         requests.get(self.base_url + "/flush_cache")
 
         args = SimpleNamespace(
+            base_url=self.base_url,
+            model=self.model,
+            eval_name="gsm8k",
+            num_examples=100,
+            num_threads=128,
             num_shots=4,
-            num_questions=100,
-            max_new_tokens=512,
-            parallel=128,
-            host="http://127.0.0.1",
-            port=int(self.base_url.split(":")[-1]),
-            data_path=GSM_DATASET_PATH,
+            gsm8k_data_path=GSM_DATASET_PATH,
         )
         metrics = run_eval_few_shot_gsm8k(args)
         print(f"{metrics=}")
 
         # Use the appropriate metric key based on the test class
-        metric_key = "accuracy"
+        metric_key = "score"
         self.assertGreater(metrics[metric_key], self.accuracy_threshold)
 
         if self.speculative_decode:

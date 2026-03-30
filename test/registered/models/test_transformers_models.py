@@ -65,11 +65,11 @@ class TestTransformersFallbackEndpoint(CustomTestCase):
             host="http://127.0.0.1",
             port=int(self.base_url.split(":")[-1]),
         )
-        from sglang.test.few_shot_gsm8k import run_eval
+        from sglang.test.run_eval import run_eval
 
         metrics = run_eval(args)
         print(f"{metrics=}")
-        self.assertGreater(metrics["accuracy"], self.gsm8k_lower_bound)
+        self.assertGreater(metrics["score"], self.gsm8k_lower_bound)
 
 
 @unittest.skipIf(is_hip(), "TorchAO int4wo quantization is not supported on AMD GPUs")

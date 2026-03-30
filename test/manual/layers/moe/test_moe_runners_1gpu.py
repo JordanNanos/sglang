@@ -206,6 +206,5 @@ for _name, _cfg in TestMoERunner.CONFIGS.items():
         (lambda self, cfg=_cfg: self._run_config(cfg)),
     )
 
-
 if __name__ == "__main__":
     unittest.main()
