@@ -30,8 +30,7 @@ class TestTorchFlexAttnBackend(CustomTestCase):
 
         try:
             args = SimpleNamespace(
-                base_url=self.base_url,
-                model=self.model,
+                base_url=base_url,
                 eval_name="gsm8k",
                 num_examples=100,
                 num_threads=10,

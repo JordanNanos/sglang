@@ -24,6 +24,7 @@ class TestBackup(CustomTestCase):
     def setUpClass(cls):
         cls.model = DEFAULT_MODEL_NAME_FOR_TEST_MLA
         cls.base_port = 20000
+        cls.base_url = f"http://127.0.0.1:{cls.base_port}"
         cls.num_processes = 2
         # TODO (stage 100): in the future, implement a specified multiprocess launcher
         cls.processes = [
