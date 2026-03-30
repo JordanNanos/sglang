@@ -148,6 +148,7 @@ test = [
   "diff-cover",
   "sentence_transformers",
   "tabulate",
+  "granian>=2.6.0",
 ]
 
 dev = ["sglang[test]"]
