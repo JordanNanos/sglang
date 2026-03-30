@@ -8,10 +8,6 @@ from typing import TYPE_CHECKING, Optional
 
 import torch
 
-from sglang.srt.mem_cache.allocator import (
-    PagedTokenToKVPoolAllocator,
-    TokenToKVPoolAllocator,
-)
 from sglang.srt.mem_cache.base_prefix_cache import (
     BasePrefixCache,
     DecLockRefParams,
@@ -24,7 +20,6 @@ from sglang.srt.mem_cache.base_prefix_cache import (
     MatchPrefixParams,
     MatchResult,
 )
-from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
 from sglang.srt.mem_cache.radix_cache import (
     RadixKey,
     _key_match_page_size1,
@@ -33,7 +28,6 @@ from sglang.srt.mem_cache.radix_cache import (
     maybe_bigram_convert,
     page_align_keys,
 )
-from sglang.srt.mem_cache.swa_memory_pool import SWATokenToKVPoolAllocator
 from sglang.srt.mem_cache.unified_cache_components import (
     BASE_COMPONENT_NAME,
     ComponentData,
@@ -54,22 +48,22 @@ if TYPE_CHECKING:
 class UnifiedTreeNode:
     counter = 0
 
-    def __init__(self, component_names: list[str]):
-        self.children = defaultdict(partial(UnifiedTreeNode, component_names))
+    def __init__(self, tree_components: list[str]):
+        self.children = defaultdict(partial(UnifiedTreeNode, tree_components))
         self.parent: UnifiedTreeNode | None = None
         self.key: Optional[RadixKey] = None
-        self.component_names = list(component_names)
+        self.tree_components = list(tree_components)
         self.component_data = {
-            component_name: ComponentData() for component_name in self.component_names
+            component_name: ComponentData() for component_name in self.tree_components
         }
         self.last_access_time = get_last_access_time()
         self.host_value = None
         self.hit_count = 0
         self.lru_prev: dict[str, UnifiedTreeNode | None] = {
-            component_name: None for component_name in self.component_names
+            component_name: None for component_name in self.tree_components
         }
         self.lru_next: dict[str, UnifiedTreeNode | None] = {
-            component_name: None for component_name in self.component_names
+            component_name: None for component_name in self.tree_components
         }
         self.id = UnifiedTreeNode.counter
         UnifiedTreeNode.counter += 1
@@ -96,10 +90,10 @@ class UnifiedTreeNode:
 
 
 class UnifiedLRUList:
-    def __init__(self, component_name: str, component_names: list[str]):
+    def __init__(self, component_name: str, tree_components: list[str]):
         self.component_name = component_name
-        self.head = UnifiedTreeNode(component_names)
-        self.tail = UnifiedTreeNode(component_names)
+        self.head = UnifiedTreeNode(tree_components)
+        self.tail = UnifiedTreeNode(tree_components)
         self.head.lru_next[component_name] = self.tail
         self.tail.lru_prev[component_name] = self.head
         self.cache: dict[int, UnifiedTreeNode] = {}
@@ -220,31 +214,29 @@ class UnifiedRadixCache(BasePrefixCache):
             self.key_match_fn = partial(_key_match_paged, page_size=self.page_size)
             self.get_child_key_fn = partial(get_child_key, page_size=self.page_size)
 
-        component_names = params.component_names
-        assert component_names is not None
-        self.component_names = [BASE_COMPONENT_NAME, *component_names]
-        self.component_order = list(component_names)
+        assert params.tree_components is not None
+        self.tree_components = list(params.tree_components)
         self.components: dict[str, TreeComponent] = {
-            name: COMPONENT_REGISTRY[name](self) for name in self.component_names
+            name: COMPONENT_REGISTRY[name](self) for name in self.tree_components
         }
         if self.is_eagle:
             self.key_convert_fn = convert_to_bigram_key
         else:
             self.key_convert_fn = lambda key: key
         self.reset()
-        logger.info(f"Init Unified RadixTree with components {self.component_names}")
+        logger.info(f"Init Unified RadixTree with components {self.tree_components}")
 
     def reset(self) -> None:
-        self.root_node = UnifiedTreeNode(self.component_names)
+        self.root_node = UnifiedTreeNode(self.tree_components)
         self.root_node.key = RadixKey([], None)
         self.root_node.full_value = []
-        for component_name in self.component_names:
+        for component_name in self.tree_components:
             self.root_node.component(component_name).lock_ref = 1
-        self.component_evictable_size_ = {name: 0 for name in self.component_names}
-        self.component_protected_size_ = {name: 0 for name in self.component_names}
+        self.component_evictable_size_ = {name: 0 for name in self.tree_components}
+        self.component_protected_size_ = {name: 0 for name in self.tree_components}
         self.lru_lists = {
-            component_name: UnifiedLRUList(component_name, self.component_names)
-            for component_name in self.component_names
+            component_name: UnifiedLRUList(component_name, self.tree_components)
+            for component_name in self.tree_components
         }
 
     def match_prefix(self, params: MatchPrefixParams) -> MatchResult:
@@ -284,7 +276,7 @@ class UnifiedRadixCache(BasePrefixCache):
         if self.disable:
             return EvictResult()
         start_time = time.perf_counter()
-        tracker = {name: 0 for name in self.component_names}
+        tracker = {name: 0 for name in self.tree_components}
 
         for component in self.components.values():
             component.drive_eviction(params, tracker)
@@ -568,7 +560,7 @@ class UnifiedRadixCache(BasePrefixCache):
     def _split_node(
         self, key: RadixKey, child: UnifiedTreeNode, split_len: int
     ) -> UnifiedTreeNode:
-        new_node = UnifiedTreeNode(self.component_names)
+        new_node = UnifiedTreeNode(self.tree_components)
         new_node.children = {self.get_child_key_fn(key[split_len:]): child}
         new_node.parent = child.parent
         new_node.key = child.key[:split_len]
@@ -600,7 +592,7 @@ class UnifiedRadixCache(BasePrefixCache):
         key: RadixKey,
         value: torch.Tensor,
     ) -> UnifiedTreeNode:
-        new_node = UnifiedTreeNode(self.component_names)
+        new_node = UnifiedTreeNode(self.tree_components)
         new_node.parent = parent
         new_node.key = key
         new_node.full_value = value.clone()
@@ -750,11 +742,17 @@ class UnifiedRadixCache(BasePrefixCache):
     def supports_mamba(self) -> bool:
         return ComponentName.MAMBA in self.components
 
-    def full_evictable_size(self) -> int:
+    def evictable_size(self) -> int:
         return self.component_evictable_size_.get(BASE_COMPONENT_NAME, 0)
 
-    def full_protected_size(self) -> int:
+    def protected_size(self) -> int:
         return self.component_protected_size_.get(BASE_COMPONENT_NAME, 0)
+
+    def full_evictable_size(self) -> int:
+        return self.evictable_size()
+
+    def full_protected_size(self) -> int:
+        return self.protected_size()
 
     def swa_evictable_size(self) -> int:
         return self.component_evictable_size_.get(ComponentName.SWA, 0)
@@ -775,7 +773,7 @@ class UnifiedRadixCache(BasePrefixCache):
         while stack:
             node = stack.pop()
             total_size += len(node.full_value)
-            for component_name in self.component_order:
+            for component_name in self.tree_components:
                 value = node.component_value(component_name)
                 if value is not None:
                     total_aux_size += len(value)
@@ -830,13 +828,14 @@ class UnifiedRadixCache(BasePrefixCache):
             f"Available full tokens: {full_available_size + full_evictable} "
             f"(full_available_size={full_available_size} + full_evictable_size_={full_evictable})"
         ]
-        for component_name in self.component_order:
+        for component_name in self.tree_components:
+            if component_name == BASE_COMPONENT_NAME:
+                continue
             if component_name.is_swa:
                 available_size = self.token_to_kv_pool_allocator.swa_available_size()
             elif component_name.is_mamba:
                 available_size = self.cache_req_mamba_pool.available_size()
-            else:
-                available_size = 0
+
             lines.append(
                 f"Available {component_name}: {available_size + self.component_evictable_size_[component_name]} "
                 f"(available_size={available_size} + component_evictable_size_={self.component_evictable_size_[component_name]})"
@@ -844,7 +843,7 @@ class UnifiedRadixCache(BasePrefixCache):
         return "\n".join(lines) + "\n"
 
     def sanity_check(self):
-        for component_name in self.component_names:
+        for component_name in self.tree_components:
             assert self.component_evictable_size_[component_name] >= 0
             assert self.component_protected_size_[component_name] >= 0
 
@@ -854,7 +853,7 @@ class UnifiedRadixCache(BasePrefixCache):
             node, indent = stack.pop()
             component_str = " ".join(
                 f"{component_name}={'yes' if node.component_value(component_name) is not None else 'no'}"
-                for component_name in self.component_order
+                for component_name in self.tree_components
             )
             print(
                 " " * indent,
@@ -865,43 +864,3 @@ class UnifiedRadixCache(BasePrefixCache):
             )
             for child in node.children.values():
                 stack.append((child, indent + 2))
-
-
-class UnifiedMambaRadixCache(UnifiedRadixCache):
-    def __init__(self, params: CacheInitParams):
-        assert isinstance(
-            params.token_to_kv_pool_allocator, TokenToKVPoolAllocator
-        ) or isinstance(params.token_to_kv_pool_allocator, PagedTokenToKVPoolAllocator)
-        assert isinstance(params.req_to_token_pool, HybridReqToTokenPool)
-        if not params.enable_mamba_extra_buffer:
-            assert params.page_size == 1
-        params.component_names = (ComponentName.MAMBA,)
-        super().__init__(params)
-
-
-class UnifiedSWARadixCache(UnifiedRadixCache):
-    def __init__(self, params: CacheInitParams):
-        assert isinstance(params.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator)
-        params.component_names = (ComponentName.SWA,)
-        super().__init__(params)
-
-
-def create_unified_radix_cache(
-    params: CacheInitParams,
-    component_names: Optional[tuple[ComponentName, ...]] = None,
-) -> UnifiedRadixCache:
-    if component_names is None:
-        component_names = params.component_names
-    if not component_names:
-        if isinstance(params.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator):
-            component_names = (ComponentName.SWA,)
-        elif isinstance(params.req_to_token_pool, HybridReqToTokenPool):
-            component_names = (ComponentName.MAMBA,)
-        else:
-            raise ValueError("Can not infer unified tree components from params.")
-    if component_names == (ComponentName.MAMBA,):
-        return UnifiedMambaRadixCache(params)
-    if component_names == (ComponentName.SWA,):
-        return UnifiedSWARadixCache(params)
-    params.component_names = component_names
-    return UnifiedRadixCache(params)

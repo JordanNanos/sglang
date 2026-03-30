@@ -37,4 +37,4 @@ class CacheInitParams:
     # Time-to-live for cache entries in seconds. If None, TTL is disabled.
     cache_ttl_seconds: Optional[float] = None
 
-    component_names: Optional[tuple[str, ...]] = None
+    tree_components: Optional[tuple[str, ...]] = None

@@ -747,21 +747,29 @@ class Scheduler(
                 self.tp_worker.register_hicache_layer_transfer_counter(
                     self.tree_cache.cache_controller.layer_done_counter
                 )
-            elif self.is_hybrid_swa or self.is_hybrid_ssm:
-                if server_args.enable_unified_radix_tree:
-                    from sglang.srt.mem_cache.unified_radix_cache import (
-                        create_unified_radix_cache,
+            elif self.server_args.enable_unified_radix_tree:
+                from sglang.srt.mem_cache.unified_cache_components import (
+                    ComponentName,
+                )
+                from sglang.srt.mem_cache.unified_radix_cache import (
+                    UnifiedRadixCache,
+                )
+
+                tree_components = [ComponentName.FULL]
+                if self.is_hybrid_swa or self.is_hybrid_ssm:
+                    tree_components.append(
+                        ComponentName.SWA if self.is_hybrid_swa else ComponentName.MAMBA
                     )
+                params.tree_components = tuple(tree_components)
+                self.tree_cache = UnifiedRadixCache(params)
+            elif self.is_hybrid_swa:
+                from sglang.srt.mem_cache.swa_radix_cache import SWARadixCache
 
-                    self.tree_cache = create_unified_radix_cache(params)
-                elif self.is_hybrid_swa:
-                    from sglang.srt.mem_cache.swa_radix_cache import SWARadixCache
+                self.tree_cache = SWARadixCache(params=params)
+            elif self.is_hybrid_ssm:
+                from sglang.srt.mem_cache.mamba_radix_cache import MambaRadixCache
 
-                    self.tree_cache = SWARadixCache(params=params)
-                else:
-                    from sglang.srt.mem_cache.mamba_radix_cache import MambaRadixCache
-
-                    self.tree_cache = MambaRadixCache(params)
+                self.tree_cache = MambaRadixCache(params)
             elif server_args.enable_lmcache:
                 from sglang.srt.mem_cache.storage.lmcache.lmc_radix_cache import (
                     LMCRadixCache,

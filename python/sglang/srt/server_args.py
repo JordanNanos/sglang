@@ -4988,7 +4988,7 @@ class ServerArgs:
         parser.add_argument(
             "--enable-unified-radix-tree",
             action="store_true",
-            help="Use UnifiedRadixCache to replace MambaRadixCache or SWARadixTree.",
+            help="Use UnifiedRadixCache to replace RadixCache, MambaRadixCache, and SWARadixCache with a unified component-based implementation.",
         )
         parser.add_argument(
             "--linear-attn-backend",

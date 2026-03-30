@@ -23,11 +23,24 @@ from sglang.srt.server_args import get_global_server_args
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.mem_cache.unified_radix_cache import (
+        UnifiedRadixCache,
         UnifiedTreeNode,
     )
 
 
 class MambaComponent(TreeComponent):
+    def __init__(self, cache: UnifiedRadixCache):
+        from sglang.srt.mem_cache.memory_pool import HybridReqToTokenPool
+
+        assert isinstance(
+            cache.req_to_token_pool, HybridReqToTokenPool
+        ), f"MambaComponent requires HybridReqToTokenPool, got {type(cache.req_to_token_pool)}"
+        if not cache.enable_mamba_extra_buffer:
+            assert (
+                cache.page_size == 1
+            ), f"MambaComponent requires page_size=1 when mamba_extra_buffer is disabled, got {cache.page_size}"
+        super().__init__(cache)
+
     @property
     def name(self) -> ComponentName:
         return ComponentName.MAMBA

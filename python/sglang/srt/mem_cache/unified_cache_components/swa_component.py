@@ -20,6 +20,7 @@ from sglang.srt.mem_cache.unified_cache_components.tree_component import (
 if TYPE_CHECKING:
     from sglang.srt.managers.schedule_batch import Req
     from sglang.srt.mem_cache.unified_radix_cache import (
+        UnifiedRadixCache,
         UnifiedTreeNode,
     )
 
@@ -33,6 +34,14 @@ class SWAComponent(TreeComponent):
     — its SWA component value becomes None while the full attention
     value stays intact.
     """
+
+    def __init__(self, cache: UnifiedRadixCache):
+        from sglang.srt.mem_cache.swa_memory_pool import SWATokenToKVPoolAllocator
+
+        assert isinstance(
+            cache.token_to_kv_pool_allocator, SWATokenToKVPoolAllocator
+        ), f"SWAComponent requires SWATokenToKVPoolAllocator, got {type(cache.token_to_kv_pool_allocator)}"
+        super().__init__(cache)
 
     @property
     def name(self) -> ComponentName:
