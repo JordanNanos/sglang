@@ -295,13 +295,10 @@ def run_eval_accuracy_test(test_instance, accuracy_threshold: float = 0.03):
     # First evaluation - populate cache
     print("Phase 1: Running initial GSM8K evaluation to populate cache...")
     args_initial = SimpleNamespace(
-        num_shots=5,
-        data_path=None,
-        num_questions=50,
-        max_new_tokens=512,
-        parallel=10,
-        host=f"http://{test_instance.base_host}",
-        port=int(test_instance.base_port),
+        base_url=f"http://{test_instance.base_host}:{test_instance.base_port}",
+        eval_name="gsm8k",
+        num_examples=50,
+        num_threads=10,
     )
     metrics_initial = run_eval(args_initial)
 
@@ -313,21 +310,21 @@ def run_eval_accuracy_test(test_instance, accuracy_threshold: float = 0.03):
     print("Phase 3: Running second GSM8K evaluation using remote cache...")
     metrics_cached = run_eval(args_initial)
 
-    # Verify accuracy consistency
-    accuracy_diff = abs(metrics_initial["accuracy"] - metrics_cached["accuracy"])
-    print(f"Accuracy difference: {accuracy_diff:.4f}")
+    # Verify score consistency
+    score_diff = abs(metrics_initial["score"] - metrics_cached["score"])
+    print(f"Score difference: {score_diff:.4f}")
 
     # Assertions
     test_instance.assertGreater(
-        metrics_initial["accuracy"], 0.6, "Initial accuracy should be reasonable"
+        metrics_initial["score"], 0.6, "Initial score should be reasonable"
     )
     test_instance.assertGreater(
-        metrics_cached["accuracy"], 0.6, "Cached accuracy should be reasonable"
+        metrics_cached["score"], 0.6, "Cached score should be reasonable"
     )
     test_instance.assertLess(
-        accuracy_diff,
+        score_diff,
         accuracy_threshold,
-        "Accuracy should be consistent between cache states",
+        "Score should be consistent between cache states",
     )
 
 
