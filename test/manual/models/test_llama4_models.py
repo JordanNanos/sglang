@@ -45,7 +45,6 @@ class TestLlama4(CustomTestCase):
                 )
                 args = SimpleNamespace(
                     base_url=self.base_url,
-                    model=self.model,
                     eval_name="gsm8k",
                     num_examples=200,
                     num_threads=128,
