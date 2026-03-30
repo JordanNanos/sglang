@@ -215,9 +215,6 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         # Init PD disaggregation and encoder disaggregation
         self.init_disaggregation()
 
-        # Subprocess liveness watchdog — set by Engine or http_server after construction
-        self._subprocess_watchdog = None
-
         # Init metric collector and watchdog
         self.init_metric_collector_watchdog()
 
@@ -342,6 +339,9 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
 
         # Session
         self.session_futures = {}  # session_id -> asyncio event
+
+        # Subprocess liveness watchdog — set by Engine or http_server after construction
+        self._subprocess_watchdog = None
 
     def init_request_logging_and_dumping(self):
         # TODO: Refactor and organize the log export code.
@@ -487,7 +487,6 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         # Normalize the request
         obj.normalize_batch_and_arguments()
         self._set_default_priority(obj)
-        self._validate_rid_not_in_flight(obj)
 
         if isinstance(obj, GenerateReqInput) and obj.routed_dp_rank is not None:
             dp_size = self.server_args.dp_size
@@ -500,7 +499,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     f"routed_dp_rank={obj.routed_dp_rank} out of range [0, {dp_size})"
                 )
 
-        self._req_stats_init(obj, request)
+        self._init_req_state(obj, request)
         if self.server_args.language_only:
             self._handle_epd_disaggregation_encode_request(obj)
         if self.server_args.tokenizer_worker_num > 1:
@@ -518,9 +517,8 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
             # Tokenize the request and send it to the scheduler
             if obj.is_single:
                 tokenized_obj = await self._tokenize_one_request(obj)
-                state = self.rid_to_state[obj.rid]
                 self._send_one_request(tokenized_obj)
-                async for response in self._wait_one_response(obj, state, request):
+                async for response in self._wait_one_response(obj, request):
                     yield response
             else:
                 async for response in self._handle_batch_request(obj, request):
@@ -768,17 +766,6 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         return self._create_tokenized_object(
             obj, input_text, input_ids, input_embeds, mm_inputs, token_type_ids
         )
-
-    def _validate_rid_not_in_flight(
-        self, obj: Union[GenerateReqInput, EmbeddingReqInput]
-    ) -> None:
-        """Validate that request IDs are not already in flight."""
-        if obj.rid is None:
-            return
-        rids = obj.rid if isinstance(obj.rid, list) else [obj.rid]
-        conflicts = set(rids) & self.rid_to_state.keys()
-        if conflicts:
-            raise ValueError(f"Duplicate request IDs detected: {list(conflicts)}")
 
     def _validate_one_request(
         self, obj: Union[GenerateReqInput, EmbeddingReqInput], input_ids: List[int]
@@ -1114,13 +1101,99 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         self.send_to_scheduler.send_pyobj(batch_req)
         set_time_batch(tokenized_objs, "set_api_server_dispatch_finish_time")
 
+    def _drain_pending_outputs(
+        self,
+        state: ReqState,
+        is_stream: bool,
+        rid: str,
+    ):
+        """Drain all pending outputs atomically.
+
+        With incremental streaming output, each chunk carries only a delta, so
+        every queued chunk must be yielded to avoid dropping token ids. Without
+        it, outputs are cumulative and only the latest chunk contains the full
+        result, so we can safely skip intermediate ones.
+        """
+        incremental_stream = is_stream and self.server_args.incremental_streaming_output
+        out_list = state.out_list
+        state.out_list = []
+        finished = state.finished
+        state.event.clear()
+
+        if incremental_stream and len(out_list) > 1:
+            if len(out_list) >= 20:
+                logger.warning(
+                    "Streaming backlog: rid=%s, coalescing %d queued chunks into one. "
+                    "This may inflate P99 ITL for affected requests.",
+                    rid,
+                    len(out_list),
+                )
+            # Coalesce all deltas into a single chunk. Both text and
+            # output_ids are incremental, so we concatenate them; all
+            # other fields (meta_info, etc.) are taken from the last chunk.
+            out = dict(out_list[-1])
+            if "output_ids" in out:
+                out["output_ids"] = [
+                    id for chunk in out_list for id in chunk["output_ids"]
+                ]
+            if "text" in out:
+                out["text"] = "".join(chunk["text"] for chunk in out_list)
+        else:
+            out = out_list[-1]
+
+        return out, finished
+
+    async def _handle_abort_finish_reason(
+        self,
+        out: dict,
+        state: ReqState,
+        is_stream: bool,
+    ) -> Optional[dict]:
+        """Handle abort/error finish reasons from the scheduler.
+
+        Returns the output dict if it should be yielded (stream abort), or None
+        for normal flow. Raises ValueError or HTTPException for non-stream aborts.
+        """
+        finish_reason = out["meta_info"]["finish_reason"]
+
+        if (
+            finish_reason.get("type") == "abort"
+            and finish_reason.get("status_code") == HTTPStatus.BAD_REQUEST
+        ):
+            if not is_stream:
+                raise ValueError(finish_reason["message"])
+            return out
+
+        if finish_reason.get("type") == "abort" and finish_reason.get(
+            "status_code"
+        ) in (
+            HTTPStatus.SERVICE_UNAVAILABLE,
+            HTTPStatus.INTERNAL_SERVER_ERROR,
+        ):
+            # Delete the key to prevent resending abort request to the scheduler and
+            # to ensure aborted request state is cleaned up.
+            if state.obj.rid in self.rid_to_state:
+                del self.rid_to_state[state.obj.rid]
+
+            # Mark ongoing LoRA request as finished.
+            if self.server_args.enable_lora and state.obj.lora_path:
+                await self.lora_registry.release(state.obj.lora_id)
+            if not is_stream:
+                raise fastapi.HTTPException(
+                    status_code=finish_reason["status_code"],
+                    detail=finish_reason["message"],
+                )
+            return out
+
+        return None
+
     async def _wait_one_response(
         self,
         obj: Union[GenerateReqInput, EmbeddingReqInput],
-        state: ReqState,
         request: Optional[fastapi.Request] = None,
     ):
         """Wait for the response of one request."""
+        state = self.rid_to_state[obj.rid]
         # Not all request types have `stream` (e.g., EmbeddingReqInput). Default to non-streaming.
         is_stream = getattr(obj, "stream", False)
         while True:
@@ -1136,49 +1209,14 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 ):
                     # Abort the request for disconnected requests (non-streaming, waiting queue)
                     self.abort_request(obj.rid)
-                    # Use exception to kill the whole call stack and asyncio task
                     raise ValueError(
                         f"Request is disconnected from the client side (type 1). Abort request {obj.rid=}"
                     )
                 continue
 
-            # Drain all pending outputs atomically.
-            # With incremental streaming output, each chunk carries only a
-            # delta, so every queued chunk must be yielded to avoid dropping
-            # token ids. Without it, outputs are cumulative and only the
-            # latest chunk contains the full result, so we can safely skip
-            # intermediate ones.
-            incremental_stream = (
-                is_stream and self.server_args.incremental_streaming_output
-            )
-            out_list = state.out_list
-            state.out_list = []
-            finished = state.finished
-            state.event.clear()
-
-            if incremental_stream and len(out_list) > 1:
-                if len(out_list) >= 20:
-                    logger.warning(
-                        "Streaming backlog: rid=%s, coalescing %d queued chunks into one. "
-                        "This may inflate P99 ITL for affected requests.",
-                        obj.rid,
-                        len(out_list),
-                    )
-                # Coalesce all deltas into a single chunk. Both text and
-                # output_ids are incremental, so we concatenate them; all
-                # other fields (meta_info, etc.) are taken from the last chunk.
-                out = dict(out_list[-1])
-                if "output_ids" in out:
-                    out["output_ids"] = [
-                        id for chunk in out_list for id in chunk["output_ids"]
-                    ]
-                if "text" in out:
-                    out["text"] = "".join(chunk["text"] for chunk in out_list)
-            else:
-                out = out_list[-1]
+            out, finished = self._drain_pending_outputs(state, is_stream, obj.rid)
 
             if finished:
-                # For non-streaming cases, response has not been sent yet (`response_sent_to_client_time` has not been set yet).
                 # Record response sent time right before we log finished results and metrics.
                 if not state.time_stats.response_sent_to_client_time:
                     state.time_stats.set_response_sent_to_client_time()
@@ -1192,47 +1230,19 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 )
 
                 if self.request_metrics_exporter_manager.exporter_enabled():
-                    # Asynchronously write metrics for this request using the exporter manager.
                     asyncio.create_task(
                         self.request_metrics_exporter_manager.write_record(obj, out)
                     )
 
                 # Check if this was an abort/error created by scheduler
                 if isinstance(out["meta_info"].get("finish_reason"), dict):
-                    finish_reason = out["meta_info"]["finish_reason"]
-                    if (
-                        finish_reason.get("type") == "abort"
-                        and finish_reason.get("status_code") == HTTPStatus.BAD_REQUEST
-                    ):
-                        if not is_stream:
-                            raise ValueError(finish_reason["message"])
-                        else:
-                            yield out
-                            break
+                    abort_out = await self._handle_abort_finish_reason(
+                        out, state, is_stream
+                    )
+                    if abort_out is not None:
+                        yield abort_out
+                        break
 
-                    if finish_reason.get("type") == "abort" and finish_reason.get(
-                        "status_code"
-                    ) in (
-                        HTTPStatus.SERVICE_UNAVAILABLE,
-                        HTTPStatus.INTERNAL_SERVER_ERROR,
-                    ):
-                        # This is an abort request initiated by scheduler.
-                        # Delete the key to prevent resending abort request to the scheduler and
-                        # to ensure aborted request state is cleaned up.
-                        if state.obj.rid in self.rid_to_state:
-                            del self.rid_to_state[state.obj.rid]
-
-                        # Mark ongoing LoRA request as finished.
-                        if self.server_args.enable_lora and state.obj.lora_path:
-                            await self.lora_registry.release(state.obj.lora_id)
-                        if not is_stream:
-                            raise fastapi.HTTPException(
-                                status_code=finish_reason["status_code"],
-                                detail=finish_reason["message"],
-                            )
-                        else:
-                            yield out
-                            break
                 yield out
                 break
 
@@ -1244,8 +1254,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                         "response_sent_to_client_ts"
                     ] = state.time_stats.get_response_sent_to_client_realtime()
                 yield out
-
-            if not is_stream:
+            else:
                 if (
                     request is not None
                     and not obj.background
@@ -1253,7 +1262,6 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 ):
                     # Abort the request for disconnected requests (non-streaming, running)
                     self.abort_request(obj.rid)
-                    # Use exception to kill the whole call stack and asyncio task
                     raise ValueError(
                         f"Request is disconnected from the client side (type 3). Abort request {obj.rid=}"
                     )
@@ -1275,9 +1283,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 # Set up generators for each request in the batch
                 for i in range(batch_size):
                     tmp_obj = obj[i]
-                    state = self.rid_to_state[tmp_obj.rid]
-                    state.obj = tmp_obj
-                    generators.append(self._wait_one_response(tmp_obj, state, request))
+                    generators.append(self._wait_one_response(tmp_obj, request))
                     rids.append(tmp_obj.rid)
             else:
                 # Sequential tokenization and processing
@@ -1289,12 +1295,8 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     for i in range(batch_size):
                         tmp_obj = obj[i]
                         tokenized_obj = await self._tokenize_one_request(tmp_obj)
-                        state = self.rid_to_state[tmp_obj.rid]
-                        state.obj = tmp_obj
                         self._send_one_request(tokenized_obj)
-                        generators.append(
-                            self._wait_one_response(tmp_obj, state, request)
-                        )
+                        generators.append(self._wait_one_response(tmp_obj, request))
                         rids.append(tmp_obj.rid)
         else:
             # FIXME: When using batch and parallel_sample_num together, the perf is not optimal.
@@ -1319,11 +1321,10 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 tokenized_obj.sampling_params = copy.copy(tokenized_obj.sampling_params)
                 tokenized_obj.sampling_params.max_new_tokens = 0
                 tokenized_obj.stream = False
-                self._req_stats_init(tmp_obj)
-                state = self.rid_to_state[tmp_obj.rid]
-                tokenized_obj.time_stats = state.time_stats
+                self._init_req_state(tmp_obj)
+                tokenized_obj.time_stats = self.rid_to_state[tmp_obj.rid].time_stats
                 self._send_one_request(tokenized_obj)
-                await self._wait_one_response(tmp_obj, state, request).__anext__()
+                await self._wait_one_response(tmp_obj, request).__anext__()
 
             # Expand requests, assign new rids for them, and send them
             for i in range(batch_size):
@@ -1331,11 +1332,10 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                     tmp_obj = copy.copy(objs[i])
                     tokenized_obj = copy.copy(tokenized_objs[i])
                     tokenized_obj.rid = tmp_obj.regenerate_rid()
-                    self._req_stats_init(tmp_obj)
-                    state = self.rid_to_state[tmp_obj.rid]
-                    tokenized_obj.time_stats = state.time_stats
+                    self._init_req_state(tmp_obj)
+                    tokenized_obj.time_stats = self.rid_to_state[tmp_obj.rid].time_stats
                     self._send_one_request(tokenized_obj)
-                    generators.append(self._wait_one_response(tmp_obj, state, request))
+                    generators.append(self._wait_one_response(tmp_obj, request))
                     rids.append(tmp_obj.rid)
 
                 self.rid_to_state[objs[i].rid].time_stats.set_finished_time()
@@ -1648,9 +1648,10 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 state.time_stats.set_first_token_time()
 
             if state.finished:
-                state.time_stats.trace_ctx.trace_set_root_attrs(
-                    self.convert_to_span_attrs(state, recv_obj, i)
-                )
+                if state.time_stats.trace_ctx.tracing_enable:
+                    state.time_stats.trace_ctx.trace_set_root_attrs(
+                        self.convert_to_span_attrs(state, recv_obj, i)
+                    )
                 state.time_stats.set_finished_time()
                 meta_info["e2e_latency"] = state.time_stats.get_e2e_latency()
 
@@ -2296,7 +2297,7 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
         # Look up the LoRA ID from the registry and start tracking ongoing LoRA requests.
         obj.lora_id = await self.lora_registry.acquire(obj.lora_path)
 
-    def _req_stats_init(
+    def _init_req_state(
         self,
         obj: Union[GenerateReqInput, EmbeddingReqInput],
         request: Optional[fastapi.Request] = None,
@@ -2315,39 +2316,32 @@ class TokenizerManager(TokenizerCommunicatorMixin, TokenizerManagerMultiItemMixi
                 external_trace_header = extract_trace_headers(request.headers)
                 obj.external_trace_header = external_trace_header
 
+        # Normalize single/batch into a uniform list of (rid, sub_obj, bootstrap_room)
         if not hasattr(obj, "is_single") or obj.is_single:
-            time_stats = APIServerReqTimeStats(disagg_mode=self.disaggregation_mode)
-            state = ReqState([], False, asyncio.Event(), obj, time_stats)
-            self.rid_to_state[obj.rid] = state
-
-            if self.server_args.enable_trace:
-                bootstrap_room = (
-                    obj.bootstrap_room if hasattr(obj, "bootstrap_room") else None
-                )
-                time_stats.init_trace_ctx(
-                    obj.rid,
-                    bootstrap_room,
-                    external_trace_header,
-                )
-            time_stats.set_created_time(created_time)
+            items = [(obj.rid, obj, getattr(obj, "bootstrap_room", None))]
         else:
-            for i in range(len(obj.rid)):
-                time_stats = APIServerReqTimeStats(disagg_mode=self.disaggregation_mode)
-                state = ReqState([], False, asyncio.Event(), obj[i], time_stats)
-                self.rid_to_state[obj.rid[i]] = state
-
-                if self.server_args.enable_trace:
-                    bootstrap_room = (
+            items = [
+                (
+                    obj.rid[i],
+                    obj[i],
+                    (
                         obj.bootstrap_room[i]
                         if hasattr(obj, "bootstrap_room") and obj.bootstrap_room
                         else None
-                    )
-                    time_stats.init_trace_ctx(
-                        obj.rid[i],
-                        bootstrap_room,
-                        external_trace_header,
-                    )
-                time_stats.set_created_time(created_time)
+                    ),
+                )
+                for i in range(len(obj.rid))
+            ]
+
+        for rid, sub_obj, bootstrap_room in items:
+            if rid in self.rid_to_state:
+                raise ValueError(f"Duplicate request ID detected: {rid}")
+            time_stats = APIServerReqTimeStats(disagg_mode=self.disaggregation_mode)
+            state = ReqState([], False, asyncio.Event(), sub_obj, time_stats)
+            self.rid_to_state[rid] = state
+            if self.server_args.enable_trace:
+                time_stats.init_trace_ctx(rid, bootstrap_room, external_trace_header)
+            time_stats.set_created_time(created_time)
 
     def _should_dispatch_to_encoder(
         self, obj: Union[GenerateReqInput, EmbeddingReqInput]
