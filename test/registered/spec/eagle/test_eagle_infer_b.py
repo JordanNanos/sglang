@@ -62,6 +62,24 @@ class TestEAGLEServerBasic(EagleServerBase):
         metrics = run_gsm8k_eval(args)
         self.assertGreater(metrics["output_throughput"], 50)
 
+        # Wait a little bit so that the memory check happens.
+        time.sleep(4)
+
+    def test_gsm8k(self):
+        requests.get(self.base_url + "/flush_cache")
+
+        args = SimpleNamespace(
+            base_url=self.base_url,
+            model=self.model,
+            eval_name="gsm8k",
+            num_examples=200,
+            num_threads=128,
+        )
+
+        metrics = run_gsm8k_eval(args)
+        print(f"{metrics=}")
+        self.assertGreater(metrics["score"], 0.20)
+
         server_info = requests.get(self.base_url + "/server_info").json()
         avg_spec_accept_length = server_info["internal_states"][0][
             "avg_spec_accept_length"
@@ -74,9 +92,6 @@ class TestEAGLEServerBasic(EagleServerBase):
             self.assertGreater(avg_spec_accept_length, 2.5)
         else:
             self.assertGreater(avg_spec_accept_length, 3.47)
-
-        # Wait a little bit so that the memory check happens.
-        time.sleep(4)
 
     def test_logprob_start_len(self):
         logprob_start_len = 4
