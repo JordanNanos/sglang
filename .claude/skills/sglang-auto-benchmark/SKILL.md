@@ -7,9 +7,15 @@ description: Run SGLang auto benchmark searches with tiered server-flag sweeps, 
 
 This skill is for repeatable, AI-driven SGLang performance tuning.
 
+The preferred workflow is:
+- start from a mostly pure-TP baseline command,
+- move the rest of the performance knobs into `search_space`,
+- let auto benchmark search and compare candidates under the target SLA.
+
 The implementation lives in:
 - `python -m sglang.auto_benchmark`
 - canonical dataset loader in `python -m sglang.bench_serving --dataset-name autobench`
+- cookbook-derived LLM reference configs in `.claude/skills/sglang-auto-benchmark/references/cookbook-llm/`
 
 ## Preconditions
 
@@ -188,14 +194,11 @@ The most important performance-related groups are:
   - `max_total_tokens`
   - `page_size`
   - `disable_radix_cache`
-  - `enable_hierarchical_cache`
-  - `hicache_ratio`
-  - `hicache_size`
-  - `enable_lmcache`
 - Parallel / distributed execution
   - `tp_size`
   - `pp_size`
   - `dp_size`
+  - `ep_size`
   - `load_balance_method`
   - `enable_dp_attention`
   - `enable_mixed_chunk`
@@ -216,6 +219,14 @@ The most important performance-related groups are:
 
 In practice, `mem_fraction_static` is usually worth including in the search space with a small conservative range, because it directly changes available KV cache capacity and therefore affects throughput, TTFT stability, and whether a candidate starts successfully at all.
 
+Do not put these into the default search space:
+- `enable_hierarchical_cache`
+- `hicache_ratio`
+- `hicache_size`
+- `enable_lmcache`
+
+Those features are not treated as standard auto-benchmark sweep knobs in this workflow.
+
 ## Base Tuning Before EAGLE
 
 Never start by tuning EAGLE first.
@@ -227,6 +238,10 @@ Use this order:
 3. Only if the user explicitly asks for speculative/EAGLE tuning, and provides the required draft model or equivalent assets, run the second-stage speculative search.
 
 Do not put `disable_cuda_graph` into the default search space. For normal performance tuning, CUDA graph should stay enabled unless the user is debugging compatibility issues.
+
+When a candidate OOMs, keep it in the final result table as a failed row and add a hint such as:
+- increase GPU count, or
+- use GPUs with larger memory.
 
 ## Running The Workflow
 

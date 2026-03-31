@@ -47,7 +47,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="SGLang auto benchmark utilities.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    run_parser = subparsers.add_parser("run", help="Run auto benchmark from YAML config.")
+    run_parser = subparsers.add_parser(
+        "run", help="Run auto benchmark from YAML config."
+    )
     run_parser.add_argument("--config", required=True)
 
     convert_parser = subparsers.add_parser(

@@ -97,12 +97,16 @@ def _normalize_prompt(row: Dict[str, Any]) -> Tuple[Any, str]:
             normalized = _normalize_messages(prompt)
             if normalized is not None:
                 return normalized, "messages"
-        if isinstance(prompt, list) and prompt and all(
-            isinstance(item, str) for item in prompt
+        if (
+            isinstance(prompt, list)
+            and prompt
+            and all(isinstance(item, str) for item in prompt)
         ):
             return prompt, "multi_turn"
-        if isinstance(prompt, list) and prompt and all(
-            isinstance(item, int) for item in prompt
+        if (
+            isinstance(prompt, list)
+            and prompt
+            and all(isinstance(item, int) for item in prompt)
         ):
             return prompt, "token_ids"
         if isinstance(prompt, str) and prompt:

@@ -16,6 +16,7 @@ sys.modules.setdefault("zmq", types.SimpleNamespace())
 from sglang.auto_benchmark_lib import (
     build_candidates,
     build_server_candidates,
+    classify_failure,
     infer_backend,
     prepare_dataset,
 )
@@ -185,9 +186,25 @@ class TestAutoBenchmarkTools(CustomTestCase):
         }
 
         candidates = build_server_candidates(server_cfg, tier=2, max_candidates=None)
-        tp_dp_pairs = {(candidate["tp_size"], candidate["dp_size"]) for candidate in candidates}
+        tp_dp_pairs = {
+            (candidate["tp_size"], candidate["dp_size"]) for candidate in candidates
+        }
         self.assertIn((4, 2), tp_dp_pairs)
         self.assertIn((2, 4), tp_dp_pairs)
+
+    def test_ep_alias_and_oom_classification(self):
+        server_cfg = {
+            "base_flags": {"model_path": "/model", "tp_size": 8},
+            "search_space": {"ep": [1, 4]},
+        }
+
+        candidates = build_server_candidates(server_cfg, tier=2, max_candidates=None)
+        ep_sizes = {candidate.get("ep_size", 1) for candidate in candidates}
+        self.assertEqual(ep_sizes, {1, 4})
+
+        diagnosis, hint = classify_failure("RuntimeError: CUDA out of memory")
+        self.assertEqual(diagnosis, "oom")
+        self.assertIn("Increase GPU count", hint)
 
 
 if __name__ == "__main__":

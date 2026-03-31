@@ -1,21 +1,15 @@
+# Cookbook LLM reference config for GLM 4.7 Flash.
+# Replace the HF repo id with a local model path if you have one.
+# Replace dataset.path with a local dataset path if you want to benchmark your own traffic.
 server:
   launch: true
   host: 127.0.0.1
   port: 30000
   env:
-    CUDA_VISIBLE_DEVICES: "0,1,2,3"
-  # Optional parallel search sugar:
-  # parallel:
-  #   # dp_size is auto-derived as visible_gpus / (tp_size * pp_size).
-  #   tp: [4, 2]
-  #   # pp_size: [1, 2]
+    CUDA_VISIBLE_DEVICES: "0"
   base_flags:
-    # Replace with a local model path if you have one.
-    model_path: Qwen/Qwen3-32B
-    tp_size: 4
-    trust_remote_code: true
-    # Keep the baseline close to a pure-TP launch command.
-  # Keep CUDA graph enabled for normal performance tuning.
+    model_path: zai-org/GLM-4.7-Flash
+    tp_size: 1
   search_space:
     mem_fraction_static: [0.82, 0.85, 0.88]
     prefill_attention_backend: [fa3, flashinfer]
@@ -23,6 +17,9 @@ server:
     chunked_prefill_size: [4096, 8192]
     max_running_requests: [64, 96, 128]
     schedule_policy: [lpm, fcfs]
+    # Uncomment when you want to search non-TP layouts supported by the model.
+    # dp_size: [1, 2]
+    # enable_dp_attention: [false, true]
 
 dataset:
   kind: sharegpt
@@ -33,19 +30,18 @@ dataset:
 
 benchmark:
   backend: auto
-  # Replace with a local tokenizer/model path if you have one.
-  tokenizer: Qwen/Qwen3-32B
+  tokenizer: zai-org/GLM-4.7-Flash
   max_concurrency: [null, 16, 32]
   extra_request_body:
     temperature: 0.0
   qps:
-    lower: 1.0
-    upper: 12.0
+    lower: 0.25
+    upper: 16.0
     tolerance: 0.1
   sla:
     max_ttft_ms: 1500
     max_tpot_ms: 30
-  output_dir: ./auto_benchmark_results/qwen3-32b
+  output_dir: ./auto_benchmark_results/cookbook-llm/glm-4.7-flash
 
 search:
   tier: 2
@@ -54,9 +50,8 @@ search:
 speculative:
   enabled: false
   algorithm: EAGLE
-  # Fill this only if you explicitly want a second-stage speculative search.
   draft_model_path: ""
   search_space:
     speculative_num_steps: [3, 5]
-    speculative_eagle_topk: [1, 4]
+    speculative_eagle_topk: [1, 2]
     speculative_num_draft_tokens: [4, 8]

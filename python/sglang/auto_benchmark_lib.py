@@ -32,7 +32,10 @@ FLAG_ALIASES = {
     "tp": "tp_size",
     "pp": "pp_size",
     "dp": "dp_size",
+    "ep": "ep_size",
 }
+
+OOM_HINT = "Candidate likely OOMed. Increase GPU count or use GPUs with larger memory."
 
 
 def load_yaml(path: str) -> Dict[str, Any]:
@@ -63,6 +66,14 @@ def flatten(data: Dict[str, Any], prefix: str = "") -> Dict[str, Any]:
     return flat
 
 
+def tail_text(path: str, limit: int = 4000) -> str:
+    if not path or not os.path.isfile(path):
+        return ""
+    with open(path, "r", encoding="utf-8", errors="ignore") as f:
+        text = f.read()
+    return text[-limit:]
+
+
 def cli_args(flags: Dict[str, Any]) -> List[str]:
     args: List[str] = []
     for key, value in flags.items():
@@ -77,6 +88,23 @@ def cli_args(flags: Dict[str, Any]) -> List[str]:
         else:
             args.extend([flag, str(value)])
     return args
+
+
+def classify_failure(message: str) -> Tuple[Optional[str], Optional[str]]:
+    lower = message.lower()
+    oom_markers = (
+        "out of memory",
+        "cuda out of memory",
+        "hip out of memory",
+        "cudnn_status_alloc_failed",
+        "std::bad_alloc",
+        "memoryerror",
+        "memory allocation",
+        "no available memory",
+    )
+    if any(marker in lower for marker in oom_markers):
+        return "oom", OOM_HINT
+    return None, None
 
 
 def prompt_kind(prompt: Any) -> str:
@@ -103,9 +131,9 @@ def summarize_rows(rows: Sequence[Any]) -> Dict[str, Any]:
         "prompt_kinds": kinds,
         "output_len_min": min(output_lens) if output_lens else 0,
         "output_len_max": max(output_lens) if output_lens else 0,
-        "output_len_avg": round(sum(output_lens) / len(output_lens), 2)
-        if output_lens
-        else 0.0,
+        "output_len_avg": (
+            round(sum(output_lens) / len(output_lens), 2) if output_lens else 0.0
+        ),
     }
 
 
@@ -240,7 +268,9 @@ def prepare_dataset(
     model: Optional[str],
     output_path: str,
 ) -> Tuple[str, List[Any], Dict[str, Any]]:
-    if dataset_cfg["kind"] == "custom" and looks_like_autobench(dataset_cfg.get("path", "")):
+    if dataset_cfg["kind"] == "custom" and looks_like_autobench(
+        dataset_cfg.get("path", "")
+    ):
         rows = load_autobench_rows(
             dataset_path=dataset_cfg["path"],
             tokenizer_path=tokenizer_path,
@@ -343,7 +373,10 @@ def build_server_candidates(
         tier=tier,
         max_candidates=max_candidates,
     )
-    return [resolve_parallelism(server_cfg, candidate, parallel_requested) for candidate in candidates]
+    return [
+        resolve_parallelism(server_cfg, candidate, parallel_requested)
+        for candidate in candidates
+    ]
 
 
 def build_candidates(
@@ -414,9 +447,15 @@ def meets_sla(result: Dict[str, Any], benchmark_cfg: Dict[str, Any]) -> bool:
     sla = benchmark_cfg.get("sla", {})
     max_ttft_ms = sla.get("max_ttft_ms")
     max_tpot_ms = sla.get("max_tpot_ms")
-    if max_ttft_ms is not None and result.get("mean_ttft_ms", float("inf")) > max_ttft_ms:
+    if (
+        max_ttft_ms is not None
+        and result.get("mean_ttft_ms", float("inf")) > max_ttft_ms
+    ):
         return False
-    if max_tpot_ms is not None and result.get("mean_tpot_ms", float("inf")) > max_tpot_ms:
+    if (
+        max_tpot_ms is not None
+        and result.get("mean_tpot_ms", float("inf")) > max_tpot_ms
+    ):
         return False
     return True
 
@@ -533,7 +572,9 @@ def build_bench_command(
     if max_concurrency is not None:
         command.extend(["--max-concurrency", str(max_concurrency)])
     if benchmark_cfg.get("warmup_requests") is not None:
-        command.extend(["--warmup-requests", str(int(benchmark_cfg["warmup_requests"]))])
+        command.extend(
+            ["--warmup-requests", str(int(benchmark_cfg["warmup_requests"]))]
+        )
     if benchmark_cfg.get("extra_request_body") is not None:
         command.extend(
             [
@@ -612,12 +653,21 @@ def run_trial(
         record["metrics"] = metrics
     except Exception as exc:  # noqa: BLE001
         record["error"] = repr(exc)
+        diagnosis, hint = classify_failure(
+            "\n".join(part for part in [repr(exc), tail_text(log_path)] if part)
+        )
+        if diagnosis:
+            record["diagnosis"] = diagnosis
+        if hint:
+            record["hint"] = hint
     finally:
         stop_server(process)
     return record
 
 
-def merge_host_port(server_cfg: Dict[str, Any], flags: Dict[str, Any]) -> Dict[str, Any]:
+def merge_host_port(
+    server_cfg: Dict[str, Any], flags: Dict[str, Any]
+) -> Dict[str, Any]:
     merged = canonicalize_flags(deepcopy(flags))
     if server_cfg.get("host") is not None and "host" not in merged:
         merged["host"] = server_cfg["host"]
@@ -736,7 +786,9 @@ def run_stage(
         for record in candidate_records:
             if not record.get("metrics"):
                 continue
-            if best_record is None or result_sort_key(record) > result_sort_key(best_record):
+            if best_record is None or result_sort_key(record) > result_sort_key(
+                best_record
+            ):
                 best_record = record
 
     return records, best_record
@@ -754,14 +806,16 @@ def run_auto_benchmark(config_path: str) -> str:
     )
     os.makedirs(output_dir, exist_ok=True)
 
-    tokenizer_path = benchmark_cfg.get("tokenizer") or server_cfg.get("base_flags", {}).get(
-        "model_path"
-    )
+    tokenizer_path = benchmark_cfg.get("tokenizer") or server_cfg.get(
+        "base_flags", {}
+    ).get("model_path")
     model = benchmark_cfg.get("model") or server_cfg.get("base_flags", {}).get(
         "model_path"
     )
     if tokenizer_path is None:
-        raise ValueError("benchmark.tokenizer or server.base_flags.model_path is required.")
+        raise ValueError(
+            "benchmark.tokenizer or server.base_flags.model_path is required."
+        )
 
     dataset_cfg = normalize_dataset_cfg(config.get("dataset"), benchmark_cfg)
     prepared_dataset_path, rows, dataset_summary = prepare_dataset(
@@ -793,7 +847,9 @@ def run_auto_benchmark(config_path: str) -> str:
     speculative_cfg = config.get("speculative", {})
     if speculative_cfg.get("enabled"):
         if best_base is None:
-            raise ValueError("Speculative search requires at least one successful base run.")
+            raise ValueError(
+                "Speculative search requires at least one successful base run."
+            )
         if not speculative_cfg.get("draft_model_path"):
             raise ValueError("speculative.draft_model_path is required.")
 
@@ -835,7 +891,11 @@ def run_auto_benchmark(config_path: str) -> str:
 
 def convert_dataset(args: argparse.Namespace) -> None:
     dataset_cfg = normalize_dataset_cfg(
-        {key: value for key, value in vars(args).items() if key not in {"command", "output", "tokenizer", "model"}},
+        {
+            key: value
+            for key, value in vars(args).items()
+            if key not in {"command", "output", "tokenizer", "model"}
+        },
         {},
     )
     output_path, rows, summary = prepare_dataset(
