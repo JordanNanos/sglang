@@ -7,7 +7,16 @@ Rules used here:
 - Move common performance knobs into `search_space`.
 - Add `ep_size` search for relevant MoE pages.
 - Keep CUDA graph enabled by default.
+- Prefer cookbook H200 defaults first, then H100 defaults when H200 is not available; if neither exists, fall back to the cookbook's published baseline for that model and say so in the config comments.
+- Default to synthetic `random` data so every config is runnable out of the box.
+- Treat `dataset.input_len` and `dataset.output_len` as aligned scenario lists, not a cartesian product.
 - If a candidate OOMs, the result table should recommend increasing GPU count or using GPUs with larger memory.
+
+Default random scenarios in these configs:
+- `1000 -> 1000` for a chat-like shape
+- `8000 -> 1000` for a summarization-like shape
+
+Each scenario should run a full search independently, and each scenario should have its own best launch command and summary table.
 
 Excluded from this folder because they are OCR/VL-oriented rather than text-serving benchmark configs:
 - DeepSeekOCR / DeepSeekOCR2

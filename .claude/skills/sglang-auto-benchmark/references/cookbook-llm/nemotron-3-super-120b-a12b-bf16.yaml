@@ -1,38 +1,61 @@
-# Cookbook LLM reference config for Nemotron 3 Super 120B A12B BF16.
-# Replace the HF repo id with a local model path if you have one.
-# Replace dataset.path with a local dataset path if you want to benchmark your own traffic.
+# Cookbook auto benchmark config for nemotron 3 super 120b a12b bf16.
+# Baseline follows the cookbook H200 default command.
+# If you run on larger-memory or stronger GPUs, you can often reduce tp/ep/pp scale or total GPU count.
+# Replace server.base_flags.model_path with a local model path if the weights are already present on disk.
+# These configs default to synthetic random traffic. Use your real workload data if you want production-faithful tuning.
+# Each input_len/output_len pair defines one benchmark scenario, for example [1000, 1000] and [8000, 1000].
+# Source: data/models/generated/v0.5.8/nemotron-super.yaml
 server:
   launch: true
   host: 127.0.0.1
   port: 30000
   env:
-    CUDA_VISIBLE_DEVICES: "0,1,2,3"
+    CUDA_VISIBLE_DEVICES: 0,1,2,3
   base_flags:
-    model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
     tp_size: 4
     trust_remote_code: true
+    kv_cache_dtype: fp8_e4m3
+    model_path: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
   search_space:
-    mem_fraction_static: [0.82, 0.85, 0.88]
-    prefill_attention_backend: [fa3, flashinfer]
-    decode_attention_backend: [fa3, flashinfer]
-    chunked_prefill_size: [4096, 8192]
-    max_running_requests: [64, 96, 128]
-    schedule_policy: [lpm, fcfs]
-    # Uncomment when you want to search non-TP layouts supported by the model.
-    # dp_size: [1, 2]
-    # enable_dp_attention: [false, true]
-
+    mem_fraction_static:
+    - 0.82
+    - 0.85
+    - 0.88
+    prefill_attention_backend:
+    - fa3
+    - flashinfer
+    decode_attention_backend:
+    - fa3
+    - flashinfer
+    chunked_prefill_size:
+    - 4096
+    - 8192
+    max_running_requests:
+    - 64
+    - 96
+    - 128
+    schedule_policy:
+    - lpm
+    - fcfs
 dataset:
-  kind: sharegpt
-  # Leave empty to auto-download ShareGPT. Replace with a local dataset path if needed.
-  path: ""
+  kind: random
   num_prompts: 1200
-  output_len: 256
-
+  scenario_names:
+  - chat
+  - summarization
+  input_len:
+  - 1000
+  - 8000
+  output_len:
+  - 1000
+  - 1000
 benchmark:
   backend: auto
   tokenizer: nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-BF16
-  max_concurrency: [null, 8, 16]
+  max_concurrency:
+  - null
+  - 8
+  - 16
   extra_request_body:
     temperature: 0.0
   qps:
@@ -43,16 +66,20 @@ benchmark:
     max_ttft_ms: 1500
     max_tpot_ms: 30
   output_dir: ./auto_benchmark_results/cookbook-llm/nemotron-3-super-120b-a12b-bf16
-
 search:
   tier: 2
   max_candidates: 24
-
 speculative:
   enabled: false
   algorithm: EAGLE
-  draft_model_path: ""
+  draft_model_path: ''
   search_space:
-    speculative_num_steps: [3, 5]
-    speculative_eagle_topk: [1, 2]
-    speculative_num_draft_tokens: [4, 8]
+    speculative_num_steps:
+    - 3
+    - 5
+    speculative_eagle_topk:
+    - 1
+    - 2
+    speculative_num_draft_tokens:
+    - 4
+    - 8

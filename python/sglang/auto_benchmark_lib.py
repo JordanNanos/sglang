@@ -47,6 +47,10 @@ def as_list(value: Any) -> List[Any]:
     return value if isinstance(value, list) else [value]
 
 
+def slugify(text: str) -> str:
+    return "".join(ch.lower() if ch.isalnum() else "-" for ch in text).strip("-")
+
+
 def canonical_flag_name(name: str) -> str:
     return FLAG_ALIASES.get(name, name)
 
@@ -214,12 +218,64 @@ def normalize_dataset_cfg(
     return cfg
 
 
+def expand_dataset_scenarios(dataset_cfg: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if dataset_cfg["kind"] != "random":
+        name = dataset_cfg.get("scenario_name", "default")
+        return [
+            {
+                "name": slugify(str(name)) or "default",
+                "display_name": str(name),
+                "cfg": dataset_cfg,
+            }
+        ]
+
+    input_lens = as_list(
+        dataset_cfg.get("input_len", dataset_cfg.get("random_input_len", 1024))
+    )
+    output_lens = as_list(
+        dataset_cfg.get("output_len", dataset_cfg.get("random_output_len", 256))
+    )
+    if len(input_lens) != len(output_lens):
+        raise ValueError(
+            "random dataset input_len and output_len must have the same number of elements."
+        )
+
+    scenario_names = dataset_cfg.get("scenario_names")
+    if scenario_names is not None and len(as_list(scenario_names)) != len(input_lens):
+        raise ValueError(
+            "dataset.scenario_names must match the length of input_len/output_len."
+        )
+
+    names = as_list(scenario_names) if scenario_names is not None else None
+    scenarios = []
+    for index, (input_len, output_len) in enumerate(zip(input_lens, output_lens)):
+        cfg = dict(dataset_cfg)
+        cfg["random_input_len"] = int(input_len)
+        cfg["random_output_len"] = int(output_len)
+        cfg["input_len"] = int(input_len)
+        cfg["output_len"] = int(output_len)
+        display_name = (
+            str(names[index])
+            if names is not None
+            else f"input{int(input_len)}-output{int(output_len)}"
+        )
+        scenarios.append(
+            {
+                "name": slugify(display_name) or f"scenario-{index + 1}",
+                "display_name": display_name,
+                "cfg": cfg,
+            }
+        )
+    return scenarios
+
+
 def build_dataset_args(
     dataset_cfg: Dict[str, Any], tokenizer_path: str, model: Optional[str]
 ) -> SimpleNamespace:
     dataset_path = dataset_cfg.get("path", "")
     if dataset_cfg["kind"] == "sharegpt" and dataset_path in ("", None, "sharegpt"):
         dataset_path = ""
+    is_random = dataset_cfg["kind"] == "random"
 
     return SimpleNamespace(
         dataset_name=dataset_cfg["kind"],
@@ -227,10 +283,14 @@ def build_dataset_args(
         tokenizer=tokenizer_path,
         model=model,
         num_prompts=int(dataset_cfg.get("num_prompts", 1000)),
-        sharegpt_output_len=dataset_cfg.get("output_len"),
+        sharegpt_output_len=(dataset_cfg.get("output_len") if not is_random else None),
         sharegpt_context_len=dataset_cfg.get("context_len"),
-        random_input_len=int(dataset_cfg.get("random_input_len", 1024)),
-        random_output_len=int(dataset_cfg.get("random_output_len", 256)),
+        random_input_len=int(
+            dataset_cfg.get("input_len", dataset_cfg.get("random_input_len", 1024))
+        ),
+        random_output_len=int(
+            dataset_cfg.get("output_len", dataset_cfg.get("random_output_len", 256))
+        ),
         random_range_ratio=float(dataset_cfg.get("random_range_ratio", 0.0)),
         prompt_suffix=dataset_cfg.get("prompt_suffix", ""),
         apply_chat_template=bool(dataset_cfg.get("apply_chat_template", False)),
@@ -749,6 +809,100 @@ def write_csv(path: str, records: Sequence[Dict[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def best_record(records: Sequence[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    successful = [record for record in records if record.get("metrics")]
+    return max(successful, key=result_sort_key) if successful else None
+
+
+def rendered_launch_command(
+    server_cfg: Dict[str, Any], server_flags: Dict[str, Any]
+) -> str:
+    prefix = server_cfg.get("command_prefix")
+    if prefix is None:
+        command = ["python", "-m", "sglang.launch_server"]
+    elif isinstance(prefix, str):
+        command = shlex.split(prefix)
+    else:
+        command = [str(item) for item in prefix]
+    command.extend(cli_args(server_flags))
+    command.extend(str(item) for item in server_cfg.get("extra_args", []))
+
+    parts: List[str] = []
+    i = 0
+    while i < len(command):
+        token = str(command[i])
+        if token.startswith("--") and i + 1 < len(command):
+            nxt = str(command[i + 1])
+            if not nxt.startswith("--"):
+                parts.append(f"{shlex.quote(token)} {shlex.quote(nxt)}")
+                i += 2
+                continue
+        parts.append(shlex.quote(token))
+        i += 1
+    return " \\\n  ".join(parts)
+
+
+def write_markdown_summary(
+    path: str,
+    scenario: Dict[str, Any],
+    dataset_cfg: Dict[str, Any],
+    dataset_summary: Dict[str, Any],
+    records: Sequence[Dict[str, Any]],
+    best: Optional[Dict[str, Any]],
+    server_cfg: Dict[str, Any],
+) -> None:
+    lines = [f"# Auto Benchmark Summary: {scenario['display_name']}", ""]
+    lines.append(f"- Dataset kind: `{dataset_cfg['kind']}`")
+    lines.append(f"- Requests: `{dataset_summary['num_requests']}`")
+    if dataset_cfg["kind"] == "random":
+        lines.append(
+            f"- Random distribution: input `{dataset_cfg['random_input_len']}`, output `{dataset_cfg['random_output_len']}`"
+        )
+    lines.append("")
+
+    if best is not None:
+        lines.extend(["## Best Launch Command", "", "```bash"])
+        lines.append(rendered_launch_command(server_cfg, best["server_flags"]))
+        lines.extend(["```", ""])
+
+    lines.extend(
+        [
+            "## Results",
+            "",
+            "| Candidate | Stage | QPS | Max Conc | Prefill | Decode | TP | EP | PP | Output tok/s | TTFT ms | TPOT ms | SLA | Note |",
+            "|---|---:|---:|---:|---|---|---:|---:|---:|---:|---:|---:|---|---|",
+        ]
+    )
+    for record in sorted(records, key=result_sort_key, reverse=True):
+        flags = record["server_flags"]
+        metrics = record.get("metrics", {})
+        note = record.get("diagnosis") or record.get("hint") or record.get("error", "")
+        note = note.splitlines()[0][:120] if note else ""
+        lines.append(
+            "| {candidate_id} | {stage} | {qps} | {mc} | {prefill} | {decode} | {tp} | {ep} | {pp} | {throughput} | {ttft} | {tpot} | {sla} | {note} |".format(
+                candidate_id=record["candidate_id"],
+                stage=record["stage"],
+                qps=record["requested_qps"],
+                mc=record["max_concurrency"],
+                prefill=flags.get("prefill_attention_backend", ""),
+                decode=flags.get("decode_attention_backend", ""),
+                tp=flags.get("tp_size", 1),
+                ep=flags.get("ep_size", ""),
+                pp=flags.get("pp_size", 1),
+                throughput=(
+                    round(metrics.get("output_throughput", 0.0), 2) if metrics else ""
+                ),
+                ttft=round(metrics.get("mean_ttft_ms", 0.0), 2) if metrics else "",
+                tpot=round(metrics.get("mean_tpot_ms", 0.0), 2) if metrics else "",
+                sla="pass" if record.get("sla_passed") else "fail",
+                note=note.replace("|", "/"),
+            )
+        )
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+
+
 def run_stage(
     stage_name: str,
     candidates: Sequence[Dict[str, Any]],
@@ -818,74 +972,167 @@ def run_auto_benchmark(config_path: str) -> str:
         )
 
     dataset_cfg = normalize_dataset_cfg(config.get("dataset"), benchmark_cfg)
-    prepared_dataset_path, rows, dataset_summary = prepare_dataset(
-        dataset_cfg=dataset_cfg,
-        tokenizer_path=tokenizer_path,
-        model=model,
-        output_path=os.path.join(output_dir, "prepared_dataset.jsonl"),
-    )
-    backend = infer_backend(benchmark_cfg.get("backend", "auto"), rows)
-    print(f"prepared_dataset={prepared_dataset_path}")
-    print(f"dataset_summary={json.dumps(dataset_summary, ensure_ascii=False)}")
-    print(f"selected_backend={backend}")
-
+    scenarios = expand_dataset_scenarios(dataset_cfg)
     tier = int(search_cfg.get("tier", 1))
     max_candidates = search_cfg.get("max_candidates")
     base_candidates = build_server_candidates(server_cfg, tier, max_candidates)
-    all_records, best_base = run_stage(
-        stage_name="base",
-        candidates=base_candidates,
-        server_cfg=server_cfg,
-        benchmark_cfg=benchmark_cfg,
-        dataset_summary=dataset_summary,
-        backend=backend,
-        dataset_path=prepared_dataset_path,
-        tokenizer_path=tokenizer_path,
-        output_dir=output_dir,
-    )
+    scenario_records: List[Dict[str, Any]] = []
 
-    speculative_cfg = config.get("speculative", {})
-    if speculative_cfg.get("enabled"):
-        if best_base is None:
-            raise ValueError(
-                "Speculative search requires at least one successful base run."
-            )
-        if not speculative_cfg.get("draft_model_path"):
-            raise ValueError("speculative.draft_model_path is required.")
+    for scenario in scenarios:
+        scenario_output_dir = (
+            output_dir
+            if len(scenarios) == 1
+            else os.path.join(output_dir, scenario["name"])
+        )
+        os.makedirs(scenario_output_dir, exist_ok=True)
+        prepared_dataset_path, rows, dataset_summary = prepare_dataset(
+            dataset_cfg=scenario["cfg"],
+            tokenizer_path=tokenizer_path,
+            model=model,
+            output_path=os.path.join(scenario_output_dir, "prepared_dataset.jsonl"),
+        )
+        backend = infer_backend(benchmark_cfg.get("backend", "auto"), rows)
+        print(f"scenario={scenario['display_name']}")
+        print(f"prepared_dataset={prepared_dataset_path}")
+        print(f"dataset_summary={json.dumps(dataset_summary, ensure_ascii=False)}")
+        print(f"selected_backend={backend}")
 
-        spec_base_flags = deepcopy(best_base["server_flags"])
-        spec_base_flags.update(deepcopy(speculative_cfg.get("base_flags", {})))
-        spec_base_flags["speculative_algorithm"] = speculative_cfg.get(
-            "algorithm", "EAGLE"
-        )
-        spec_base_flags["speculative_draft_model_path"] = speculative_cfg[
-            "draft_model_path"
-        ]
-        spec_candidates = build_candidates(
-            base_flags=canonicalize_flags(spec_base_flags),
-            search_space=deepcopy(speculative_cfg.get("search_space", {})),
-            tier=tier,
-            max_candidates=max_candidates,
-        )
-        spec_records, _ = run_stage(
-            stage_name="speculative",
-            candidates=spec_candidates,
+        all_records, best_base = run_stage(
+            stage_name="base",
+            candidates=base_candidates,
             server_cfg=server_cfg,
             benchmark_cfg=benchmark_cfg,
             dataset_summary=dataset_summary,
             backend=backend,
             dataset_path=prepared_dataset_path,
             tokenizer_path=tokenizer_path,
-            output_dir=output_dir,
+            output_dir=scenario_output_dir,
         )
-        all_records.extend(spec_records)
 
-    results_jsonl = os.path.join(output_dir, "results.jsonl")
-    results_csv = os.path.join(output_dir, "results.csv")
-    write_jsonl(results_jsonl, all_records)
-    write_csv(results_csv, all_records)
-    print(f"results_jsonl={results_jsonl}")
-    print(f"results_csv={results_csv}")
+        speculative_cfg = config.get("speculative", {})
+        if speculative_cfg.get("enabled"):
+            if best_base is None:
+                raise ValueError(
+                    "Speculative search requires at least one successful base run."
+                )
+            if not speculative_cfg.get("draft_model_path"):
+                raise ValueError("speculative.draft_model_path is required.")
+
+            spec_base_flags = deepcopy(best_base["server_flags"])
+            spec_base_flags.update(deepcopy(speculative_cfg.get("base_flags", {})))
+            spec_base_flags["speculative_algorithm"] = speculative_cfg.get(
+                "algorithm", "EAGLE"
+            )
+            spec_base_flags["speculative_draft_model_path"] = speculative_cfg[
+                "draft_model_path"
+            ]
+            spec_candidates = build_candidates(
+                base_flags=canonicalize_flags(spec_base_flags),
+                search_space=deepcopy(speculative_cfg.get("search_space", {})),
+                tier=tier,
+                max_candidates=max_candidates,
+            )
+            spec_records, _ = run_stage(
+                stage_name="speculative",
+                candidates=spec_candidates,
+                server_cfg=server_cfg,
+                benchmark_cfg=benchmark_cfg,
+                dataset_summary=dataset_summary,
+                backend=backend,
+                dataset_path=prepared_dataset_path,
+                tokenizer_path=tokenizer_path,
+                output_dir=scenario_output_dir,
+            )
+            all_records.extend(spec_records)
+
+        results_jsonl = os.path.join(scenario_output_dir, "results.jsonl")
+        results_csv = os.path.join(scenario_output_dir, "results.csv")
+        write_jsonl(results_jsonl, all_records)
+        write_csv(results_csv, all_records)
+        write_markdown_summary(
+            path=os.path.join(scenario_output_dir, "summary.md"),
+            scenario=scenario,
+            dataset_cfg=scenario["cfg"],
+            dataset_summary=dataset_summary,
+            records=all_records,
+            best=best_record(all_records),
+            server_cfg=server_cfg,
+        )
+        scenario_records.append(
+            {
+                "scenario_name": scenario["display_name"],
+                "scenario_dir": scenario_output_dir,
+                "best_record": best_record(all_records),
+            }
+        )
+        print(f"results_jsonl={results_jsonl}")
+        print(f"results_csv={results_csv}")
+
+    if len(scenarios) > 1:
+        summary_rows = []
+        for item in scenario_records:
+            record = item["best_record"]
+            metrics = record.get("metrics", {}) if record else {}
+            summary_rows.append(
+                {
+                    "scenario_name": item["scenario_name"],
+                    "scenario_dir": item["scenario_dir"],
+                    "requested_qps": record.get("requested_qps") if record else None,
+                    "mean_ttft_ms": metrics.get("mean_ttft_ms"),
+                    "mean_tpot_ms": metrics.get("mean_tpot_ms"),
+                    "output_throughput": metrics.get("output_throughput"),
+                    "launch_command": (
+                        rendered_launch_command(server_cfg, record["server_flags"])
+                        if record
+                        else ""
+                    ),
+                }
+            )
+        write_jsonl(os.path.join(output_dir, "scenario_summary.jsonl"), summary_rows)
+        write_csv(os.path.join(output_dir, "scenario_summary.csv"), summary_rows)
+        lines = [
+            "# Scenario Summary",
+            "",
+            "| Scenario | QPS | Output tok/s | TTFT ms | TPOT ms | Summary |",
+            "|---|---:|---:|---:|---:|---|",
+        ]
+        for row in summary_rows:
+            summary_path = os.path.join(row["scenario_dir"], "summary.md")
+            lines.append(
+                "| {name} | {qps} | {throughput} | {ttft} | {tpot} | `{path}` |".format(
+                    name=row["scenario_name"],
+                    qps=row.get("requested_qps") or "",
+                    throughput=(
+                        round(row.get("output_throughput", 0.0), 2)
+                        if row.get("output_throughput") is not None
+                        else ""
+                    ),
+                    ttft=(
+                        round(row.get("mean_ttft_ms", 0.0), 2)
+                        if row.get("mean_ttft_ms") is not None
+                        else ""
+                    ),
+                    tpot=(
+                        round(row.get("mean_tpot_ms", 0.0), 2)
+                        if row.get("mean_tpot_ms") is not None
+                        else ""
+                    ),
+                    path=summary_path,
+                )
+            )
+            if row.get("launch_command"):
+                lines.extend(
+                    [
+                        "",
+                        f"## {row['scenario_name']}",
+                        "",
+                        "```bash",
+                        row["launch_command"],
+                        "```",
+                    ]
+                )
+        with open(os.path.join(output_dir, "SUMMARY.md"), "w", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
     return output_dir
 
 

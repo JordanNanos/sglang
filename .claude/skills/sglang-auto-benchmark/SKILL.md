@@ -40,6 +40,8 @@ That means:
 
 `sharegpt`, `random`, and `generated-shared-prefix` are useful for sanity checks and broad tuning, but they are not a substitute for the user’s real traffic.
 
+The cookbook reference configs now default to `random` because it is portable and immediately runnable, but that should still be treated as a fallback benchmark shape rather than the final answer for a real deployment.
+
 ## Supported Dataset Kinds
 
 The current implementation intentionally keeps the dataset surface small:
@@ -53,6 +55,20 @@ The current implementation intentionally keeps the dataset surface small:
     - already-converted canonical autobench JSONL.
 - `random`
   - Uses SGLang’s existing synthetic/random benchmark path.
+  - This is the default dataset mode in the cookbook reference configs.
+  - `input_len` and `output_len` can be lists of equal length.
+  - Each aligned pair becomes one full benchmark scenario, not a cartesian product.
+  - Example:
+
+```yaml
+dataset:
+  kind: random
+  scenario_names: [chat, summarization]
+  input_len: [1000, 8000]
+  output_len: [1000, 1000]
+```
+
+  - The workflow will run one full search for `1000 -> 1000` and one full search for `8000 -> 1000`.
 - `generated-shared-prefix`
   - Uses SGLang’s existing shared-prefix synthetic generator.
 

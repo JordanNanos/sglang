@@ -17,6 +17,7 @@ from sglang.auto_benchmark_lib import (
     build_candidates,
     build_server_candidates,
     classify_failure,
+    expand_dataset_scenarios,
     infer_backend,
     prepare_dataset,
 )
@@ -205,6 +206,22 @@ class TestAutoBenchmarkTools(CustomTestCase):
         diagnosis, hint = classify_failure("RuntimeError: CUDA out of memory")
         self.assertEqual(diagnosis, "oom")
         self.assertIn("Increase GPU count", hint)
+
+    def test_expand_random_dataset_scenarios(self):
+        scenarios = expand_dataset_scenarios(
+            {
+                "kind": "random",
+                "scenario_names": ["chat", "summarization"],
+                "input_len": [1000, 8000],
+                "output_len": [1000, 1000],
+            }
+        )
+
+        self.assertEqual(len(scenarios), 2)
+        self.assertEqual(scenarios[0]["name"], "chat")
+        self.assertEqual(scenarios[0]["cfg"]["random_input_len"], 1000)
+        self.assertEqual(scenarios[1]["cfg"]["random_input_len"], 8000)
+        self.assertEqual(scenarios[1]["cfg"]["random_output_len"], 1000)
 
 
 if __name__ == "__main__":
