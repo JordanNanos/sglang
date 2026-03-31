@@ -94,15 +94,6 @@ ARG FHT_REPO="https://github.com/jeffdaily/fast-hadamard-transform.git"
 ARG FHT_BRANCH="rocm"
 ARG FHT_COMMIT="46efb7d776d38638fc39f3c803eaee3dd7016bd1"
 
-ARG ENABLE_MORI=0
-ARG NIC_BACKEND=none
-
-ARG MORI_REPO="https://github.com/ROCm/mori.git"
-ARG MORI_COMMIT="2f88d06aba75400262ca5c1ca5986cf1fdf4cd82"
-
-# AMD AINIC apt repo settings
-ARG AINIC_VERSION=1.117.5
-ARG UBUNTU_CODENAME=jammy
 USER root
 
 # Install some basic utilities
@@ -250,8 +241,11 @@ RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y \
 ENV CARGO_BUILD_JOBS=4
 
 # Build and install sgl-model-gateway
+# Pin smg-wasm to 1.0.0 — v1.0.1 changed the WasmModuleManager API and breaks v0.5.9
 RUN python3 -m pip install --no-cache-dir maturin \
-    && cd /sgl-workspace/sglang/sgl-model-gateway/bindings/python \
+    && cd /sgl-workspace/sglang/sgl-model-gateway \
+    && sed -i 's/smg-wasm = "~1.0.0"/smg-wasm = "=1.0.0"/' Cargo.toml \
+    && cd bindings/python \
     && ulimit -n 65536 && maturin build --release --features vendored-openssl --out dist \
     && python3 -m pip install --force-reinstall dist/*.whl \
     && rm -rf /root/.cache
@@ -346,6 +340,28 @@ RUN python3 -m pip install --no-cache-dir \
     tabulate
 
 # -----------------------
+# MORI ARGs declared here (after sgl-model-gateway) so Docker cache is not
+# invalidated for prior layers when ENABLE_MORI / NIC_BACKEND values change.
+ARG ENABLE_MORI=0
+ARG NIC_BACKEND=none
+
+ARG MORI_REPO="https://github.com/ROCm/mori.git"
+# Updated from 2f88d06: that commit requires system bnxt_re_dv.h/bnxt_re_hsi.h
+# headers (not shipped by the BCM driver package). HEAD (ead84d86+) uses
+# bundled headers + dlopen at runtime instead.
+ARG MORI_COMMIT="c0eccaf2"
+
+# AMD AINIC apt repo settings
+ARG AINIC_VERSION=1.117.5
+ARG UBUNTU_CODENAME=jammy
+
+# -----------------------
+# Broadcom bnxt_rocelib (required when NIC_BACKEND=ibgda)
+ARG BCM_DRIVER=bcm5760x_231.2.63.0a.zip
+COPY install_bcm_lib.sh /tmp/install_bcm_lib.sh
+COPY ${BCM_DRIVER} /root/cache/${BCM_DRIVER}
+
+# -----------------------
 # MORI (optional)
 RUN /bin/bash -lc 'set -euo pipefail; \
   if [ "${ENABLE_MORI}" != "1" ]; then \
@@ -386,14 +402,22 @@ RUN /bin/bash -lc 'set -euo pipefail; \
       ; \
       rm -rf /var/lib/apt/lists/*; \
       ;; \
-    # TODO: Add Broadcom bnxt packages/repos here later.
-    # bnxt) \
-    #   export USE_IONIC="OFF"; \
-    #   export USE_BNXT="ON"; \
-    #   echo "[MORI] NIC_BACKEND=bnxt: USE_BNXT=ON. Add Broadcom bnxt packages/repos here later."; \
-    #   ;; \
+    # InfiniBand GPU Direct RDMA — installs Broadcom NetXtreme-E bnxt_rocelib
+    ibgda) \
+      export USE_IONIC="OFF"; \
+      export USE_BNXT="ON"; \
+      apt-get update && apt-get install -y --no-install-recommends \
+          unzip libibumad-dev rdma-core ibverbs-utils infiniband-diags \
+          libelf-dev gcc make libtool autoconf \
+          librdmacm-dev rdmacm-utils libibverbs-dev perftest ethtool strace \
+      && rm -rf /var/lib/apt/lists/*; \
+      sed -e "s/sudo //g" \
+          -e "s|BCM_DRIVER=\"[^\"]*\"|BCM_DRIVER=\"${BCM_DRIVER}\"|" \
+          /tmp/install_bcm_lib.sh > /tmp/install_bcm_lib_run.sh; \
+      bash /tmp/install_bcm_lib_run.sh; \
+      ;; \
     *) \
-      echo "ERROR: unknown NIC_BACKEND=${NIC_BACKEND}. Use one of: none, ainic"; \
+      echo "ERROR: unknown NIC_BACKEND=${NIC_BACKEND}. Use one of: none, ainic, ibgda"; \
       exit 2; \
       ;; \
   esac; \
