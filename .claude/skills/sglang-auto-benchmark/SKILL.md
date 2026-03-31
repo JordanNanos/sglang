@@ -116,7 +116,7 @@ Example:
 python3 -m sglang.auto_benchmark convert \
   --kind sharegpt \
   --tokenizer /path/to/tokenizer \
-  --num-prompts 1200 \
+  --num-prompts 200 \
   --output /tmp/sharegpt.autobench.jsonl
 ```
 

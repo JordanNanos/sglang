@@ -28,7 +28,7 @@ dataset:
   kind: sharegpt
   # Leave empty to auto-download ShareGPT. Replace with a local dataset path if needed.
   path: ""
-  num_prompts: 1200
+  num_prompts: 200
   output_len: 256
 
 benchmark:

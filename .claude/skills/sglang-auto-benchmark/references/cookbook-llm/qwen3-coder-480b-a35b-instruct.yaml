@@ -40,7 +40,7 @@ server:
     - 2
 dataset:
   kind: random
-  num_prompts: 1200
+  num_prompts: 200
   scenario_names:
   - chat
   - summarization
