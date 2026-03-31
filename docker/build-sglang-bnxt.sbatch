@@ -12,7 +12,7 @@
 set -euo pipefail
 
 # ── Config ──────────────────────────────────────────────────────────────
-IMAGE="ghcr.io/jordannanos/sgl-mi325x-mori:v0.5.9-bnxt"
+IMAGE="ghcr.io/jordannanos/sgl-mi325x-mori:v0.5.9-bnxt-good"
 CACHE_FROM="${IMAGE}"
 DOCKERFILE="/nfsdata/sa/.j9s/sglang/docker/rocm.Dockerfile"
 BUILD_CONTEXT="/nfsdata/sa/.j9s/sglang/docker/"
