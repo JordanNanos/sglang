@@ -6,8 +6,8 @@ from sglang.srt.mem_cache.unified_cache_components.tree_component import (
     ComponentData,
     ComponentType,
     TreeComponent,
-    gen_component_uuid,
-    get_last_access_time,
+    next_component_uuid,
+    get_and_increase_time_counter,
 )
 
 __all__ = [
@@ -18,6 +18,6 @@ __all__ = [
     "MambaComponent",
     "SWAComponent",
     "TreeComponent",
-    "gen_component_uuid",
-    "get_last_access_time",
+    "next_component_uuid",
+    "get_and_increase_time_counter",
 ]

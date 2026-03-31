@@ -14,7 +14,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 from sglang.srt.mem_cache.unified_cache_components.tree_component import (
     ComponentType,
     TreeComponent,
-    gen_component_uuid,
+    next_component_uuid,
 )
 
 if TYPE_CHECKING:
@@ -190,7 +190,7 @@ class SWAComponent(TreeComponent):
     def eviction_priority(self, is_leaf: bool) -> int:
         return 0 if is_leaf else 1
 
-    def drive_eviction(self, params: EvictParams, tracker: dict[str, int]) -> None:
+    def drive_eviction(self, params: EvictParams, tracker: dict[ComponentType, int]) -> None:
         request = params.swa_num_tokens
         lru = self.cache.lru_lists[self.component_type]
         x = lru.get_lru_no_lock()
@@ -236,7 +236,7 @@ class SWAComponent(TreeComponent):
             swa_lock_size += len(cur.key)
             if swa_lock_size >= sliding_window_size:
                 if comp.metadata.get("uuid") is None:
-                    comp.metadata["uuid"] = gen_component_uuid()
+                    comp.metadata["uuid"] = next_component_uuid()
                 swa_uuid_for_lock = comp.metadata["uuid"]
             cur = cur.parent
 

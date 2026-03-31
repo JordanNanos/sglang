@@ -58,14 +58,14 @@ class ComponentData:
     metadata: dict[str, Any] = dataclasses.field(default_factory=dict)
 
 
-def get_last_access_time() -> float64:
+def get_and_increase_time_counter() -> float64:
     global _LAST_ACCESS_TIME_COUNTER_FLOAT
     ret = _LAST_ACCESS_TIME_COUNTER_FLOAT
     _LAST_ACCESS_TIME_COUNTER_FLOAT += 1.0
     return ret
 
 
-def gen_component_uuid() -> int:
+def next_component_uuid() -> int:
     global _COMPONENT_UUID_COUNTER
     _COMPONENT_UUID_COUNTER += 1
     return _COMPONENT_UUID_COUNTER
@@ -213,7 +213,7 @@ class TreeComponent(ABC):
         return 0
 
     @abstractmethod
-    def drive_eviction(self, params: EvictParams, tracker: dict[str, int]) -> None:
+    def drive_eviction(self, params: EvictParams, tracker: dict[ComponentType, int]) -> None:
         """Drive eviction from this component's LRU list.
         Each component extracts its own request from params, walks its own
         LRU, evicts, and calls cache._cascade_evict for priority cascade.

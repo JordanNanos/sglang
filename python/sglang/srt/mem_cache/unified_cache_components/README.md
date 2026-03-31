@@ -62,7 +62,7 @@ node.component_data = {
 | File | Contents |
 |------|----------|
 | `../unified_radix_cache.py` | `UnifiedRadixCache`, `UnifiedTreeNode`, `UnifiedLRUList`, factory `create_unified_radix_cache` |
-| `tree_component.py` | `TreeComponent` ABC, `ComponentName`, `ComponentData`, `get_last_access_time` |
+| `tree_component.py` | `TreeComponent` ABC, `ComponentType`, `ComponentData`, `get_and_increase_time_counter`, `next_component_uuid` |
 | `full_component.py` | `FullComponent` — standard full-attention KV cache component |
 | `swa_component.py` | `SWAComponent` — sliding-window attention component with tombstone/window tracking |
 | `mamba_component.py` | `MambaComponent` — Mamba/SSM state component with copy-on-write |

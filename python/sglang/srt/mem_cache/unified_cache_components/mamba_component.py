@@ -16,7 +16,7 @@ from sglang.srt.mem_cache.base_prefix_cache import (
 from sglang.srt.mem_cache.unified_cache_components.tree_component import (
     ComponentType,
     TreeComponent,
-    get_last_access_time,
+    get_and_increase_time_counter,
 )
 from sglang.srt.server_args import get_global_server_args
 
@@ -115,10 +115,10 @@ class MambaComponent(TreeComponent):
             self.cache.component_evictable_size_[self.component_type] += len(
                 params.mamba_value
             )
-            node.last_access_time = get_last_access_time()
+            node.last_access_time = get_and_increase_time_counter()
             return
         self.cache.lru_lists[self.component_type].reset_node_mru(node)
-        node.last_access_time = get_last_access_time()
+        node.last_access_time = get_and_increase_time_counter()
         result.mamba_exist = True
 
     def redistribute_on_node_split(
@@ -136,7 +136,7 @@ class MambaComponent(TreeComponent):
             node.set_component_value(self.component_type, None)
         return freed
 
-    def drive_eviction(self, params: EvictParams, tracker: dict[str, int]) -> None:
+    def drive_eviction(self, params: EvictParams, tracker: dict[ComponentType, int]) -> None:
         request = params.mamba_num
         lru = self.cache.lru_lists[self.component_type]
         x = lru.get_lru_no_lock()

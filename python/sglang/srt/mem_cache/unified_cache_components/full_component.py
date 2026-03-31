@@ -46,7 +46,7 @@ class FullComponent(TreeComponent):
     def eviction_priority(self, is_leaf: bool) -> int:
         return 0 if is_leaf else 2
 
-    def drive_eviction(self, params: EvictParams, tracker: dict[str, int]) -> None:
+    def drive_eviction(self, params: EvictParams, tracker: dict[ComponentType, int]) -> None:
         request = params.num_tokens
         lru = self.cache.lru_lists[self.component_type]
         while tracker[self.component_type] < request:

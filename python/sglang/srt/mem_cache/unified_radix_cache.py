@@ -36,7 +36,7 @@ from sglang.srt.mem_cache.unified_cache_components import (
     MambaComponent,
     SWAComponent,
     TreeComponent,
-    get_last_access_time,
+    get_and_increase_time_counter,
 )
 from sglang.srt.mem_cache.utils import convert_to_bigram_key
 
@@ -48,25 +48,25 @@ if TYPE_CHECKING:
 class UnifiedTreeNode:
     counter = 0
 
-    def __init__(self, tree_components: list[str]):
+    def __init__(self, tree_components: list[ComponentType]):
         self.children = defaultdict(partial(UnifiedTreeNode, tree_components))
         self.parent: UnifiedTreeNode | None = None
         self.key: Optional[RadixKey] = None
         self.tree_components = list(tree_components)
         self.component_data = {ct: ComponentData() for ct in self.tree_components}
-        self.last_access_time = get_last_access_time()
+        self.last_access_time = get_and_increase_time_counter()
         self.host_value = None
         self.hit_count = 0
-        self.lru_prev: dict[str, UnifiedTreeNode | None] = {
+        self.lru_prev: dict[ComponentType, UnifiedTreeNode | None] = {
             ct: None for ct in self.tree_components
         }
-        self.lru_next: dict[str, UnifiedTreeNode | None] = {
+        self.lru_next: dict[ComponentType, UnifiedTreeNode | None] = {
             ct: None for ct in self.tree_components
         }
         self.id = UnifiedTreeNode.counter
         UnifiedTreeNode.counter += 1
 
-    def component(self, component_type: str) -> ComponentData:
+    def component(self, component_type: ComponentType) -> ComponentData:
         return self.component_data[component_type]
 
     @property
@@ -77,11 +77,11 @@ class UnifiedTreeNode:
     def full_value(self, value: Optional[torch.Tensor]) -> None:
         self.component(BASE_COMPONENT_TYPE).value = value
 
-    def component_value(self, component_type: str) -> Optional[torch.Tensor]:
+    def component_value(self, component_type: ComponentType) -> Optional[torch.Tensor]:
         return self.component(component_type).value
 
     def set_component_value(
-        self, component_type: str, value: Optional[torch.Tensor]
+        self, component_type: ComponentType, value: Optional[torch.Tensor]
     ) -> None:
         self.component(component_type).value = value
 
@@ -90,7 +90,7 @@ class UnifiedTreeNode:
 
 
 class UnifiedLRUList:
-    def __init__(self, component_type: str, tree_components: list[str]):
+    def __init__(self, component_type: ComponentType, tree_components: list[ComponentType]):
         self.component_type = component_type
         self.head = UnifiedTreeNode(tree_components)
         self.tail = UnifiedTreeNode(tree_components)
@@ -210,7 +210,7 @@ class UnifiedRadixCache(BasePrefixCache):
 
         assert params.tree_components is not None
         self.tree_components = list(params.tree_components)
-        self.components: dict[str, TreeComponent] = {
+        self.components: dict[ComponentType, TreeComponent] = {
             ct: COMPONENT_REGISTRY[ct](self, params) for ct in self.tree_components
         }
         if self.is_eagle:
@@ -531,7 +531,7 @@ class UnifiedRadixCache(BasePrefixCache):
             self.lru_lists[ct].reset_node_and_parents_mru(
                 node_update, self.root_node, component.node_has_component_data
             )
-        cur_time = get_last_access_time()
+        cur_time = get_and_increase_time_counter()
         while node_update:
             node_update.last_access_time = cur_time
             cur_time -= 0.00001
@@ -574,11 +574,11 @@ class UnifiedRadixCache(BasePrefixCache):
 
         self._for_each_component_lru(new_node, UnifiedLRUList.insert_mru)
         self._for_each_component_lru(child, UnifiedLRUList.insert_mru)
-        child.last_access_time = get_last_access_time()
+        child.last_access_time = get_and_increase_time_counter()
         return new_node
 
     def _touch_node(self, node: UnifiedTreeNode):
-        node.last_access_time = get_last_access_time()
+        node.last_access_time = get_and_increase_time_counter()
         if node != self.root_node:
             self._for_each_component_lru(node, UnifiedLRUList.reset_node_mru)
 
@@ -671,7 +671,7 @@ class UnifiedRadixCache(BasePrefixCache):
         node: UnifiedTreeNode,
         comp: TreeComponent,
         is_leaf: bool,
-        tracker: dict[str, int],
+        tracker: dict[ComponentType, int],
     ) -> int:
         freed = comp.evict_component(node, is_leaf=is_leaf)
         tracker[comp.component_type] += freed
@@ -681,7 +681,7 @@ class UnifiedRadixCache(BasePrefixCache):
         return freed
 
     def _cascade_evict(
-        self, node: UnifiedTreeNode, trigger: TreeComponent, tracker: dict[str, int]
+        self, node: UnifiedTreeNode, trigger: TreeComponent, tracker: dict[ComponentType, int]
     ):
         is_leaf = len(node.children) == 0
         trigger_priority = trigger.eviction_priority(is_leaf)
@@ -699,7 +699,7 @@ class UnifiedRadixCache(BasePrefixCache):
             self._iteratively_delete_tombstone_leaf(node, tracker)
 
     def _iteratively_delete_tombstone_leaf(
-        self, deleted_node: UnifiedTreeNode, tracker: dict[str, int]
+        self, deleted_node: UnifiedTreeNode, tracker: dict[ComponentType, int]
     ):
         """After a leaf is removed, walk up the parent chain and delete
         any ancestor that is leaf node and has lost any component data (tombstoned)."""
@@ -794,7 +794,7 @@ class UnifiedRadixCache(BasePrefixCache):
             return torch.cat(values)
         return torch.tensor([], dtype=torch.int64, device=self.device)
 
-    def _all_component_values_flatten(self, component_type: str) -> torch.Tensor:
+    def _all_component_values_flatten(self, component_type: ComponentType) -> torch.Tensor:
         if component_type not in self.components:
             return torch.tensor([], dtype=torch.int64, device=self.device)
 
